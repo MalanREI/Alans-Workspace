@@ -82,11 +82,11 @@ export async function POST(req: Request) {
 
     meetingId = body.meetingId;
     sessionId = body.sessionId;
-    const recordingPath = body.recordingPath;
+    // recordingPath kept for backward compat but we now query all recordings from the DB.
 
-    if (!meetingId || !sessionId || !recordingPath) {
+    if (!meetingId || !sessionId) {
       return NextResponse.json(
-        { error: "meetingId + sessionId + recordingPath required" },
+        { error: "meetingId + sessionId required" },
         { status: 400 }
       );
     }
@@ -121,7 +121,7 @@ export async function POST(req: Request) {
     if (!agenda.length) {
       await admin
         .from("meeting_minutes_sessions")
-        .update({ 
+        .update({
           ai_status: "done",
           ai_processed_at: new Date().toISOString(),
         })
@@ -129,30 +129,58 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, skipped: "No agenda items" });
     }
 
-    // 2) Download recording from storage
-    const dl = await admin.storage.from(recordingsBucket).download(recordingPath);
-    if (dl.error) throw dl.error;
+    // 2) Fetch ALL recordings for this session ordered oldest-first so the
+    //    transcript reads chronologically. Long meetings produce multiple
+    //    segments (one per rotation interval) and we must transcribe all of them.
+    const recRes = await admin
+      .from("meeting_recordings")
+      .select("storage_path,created_at")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true })
+      .limit(50);
 
-    const arrBuf = await dl.data.arrayBuffer();
+    if (recRes.error) throw recRes.error;
 
-    // 3) Transcribe with retry logic
+    const recordings = (recRes.data ?? []).filter((r) => r.storage_path);
+
+    if (!recordings.length) {
+      await admin
+        .from("meeting_minutes_sessions")
+        .update({ ai_status: "skipped", ai_processed_at: new Date().toISOString() })
+        .eq("id", sessionId);
+      return NextResponse.json({ ok: true, skipped: "No recordings found for session" });
+    }
+
+    // 3) Transcribe every segment and concatenate into a single transcript.
     const client = new OpenAI({ apiKey: openaiKey });
+    const transcriptParts: string[] = [];
 
-    const transcription = await retryWithBackoff(async () => {
-      return await client.audio.transcriptions.create({
-        model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
-        file: bufToFile(arrBuf, "recording.webm", "audio/webm"),
-      });
-    }, 3, 2000); // 3 retries, starting with 2 second delay
+    for (let i = 0; i < recordings.length; i++) {
+      const rec = recordings[i]!;
+      const dl = await admin.storage.from(recordingsBucket).download(rec.storage_path);
+      if (dl.error) {
+        console.error(`Failed to download recording segment ${i + 1}:`, dl.error);
+        continue; // skip bad segments; don't abort the whole job
+      }
+      const arrBuf = await dl.data.arrayBuffer();
 
-    const transcriptText = transcription?.text
-      ? String(transcription.text)
-      : "";
+      const transcription = await retryWithBackoff(async () => {
+        return await client.audio.transcriptions.create({
+          model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
+          file: bufToFile(arrBuf, `recording-${i + 1}.webm`, "audio/webm"),
+        });
+      }, 3, 2000);
+
+      const segText = transcription?.text ? String(transcription.text).trim() : "";
+      if (segText) transcriptParts.push(segText);
+    }
+
+    const transcriptText = transcriptParts.join("\n\n");
 
     if (!transcriptText.trim()) {
       await admin
         .from("meeting_minutes_sessions")
-        .update({ 
+        .update({
           ai_status: "done",
           ai_processed_at: new Date().toISOString(),
         })

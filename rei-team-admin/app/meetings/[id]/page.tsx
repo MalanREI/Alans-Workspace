@@ -1,0 +1,4332 @@
+"use client";
+
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useParams, useSearchParams } from "next/navigation";
+import {
+  DndContext,
+  DragEndEvent,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+} from "@dnd-kit/core";
+import { CSS } from "@dnd-kit/utilities";
+import { supabaseBrowser } from "@/src/lib/supabase/browser";
+import { Button, Card, Input, Modal, Pill, Textarea, Dropdown, MultiSelectDropdown } from "@/src/components/ui";
+import { prettyDate } from "@/src/lib/format";
+import { PageShell } from "@/src/components/PageShell";
+import ResizableSidebar from "@/src/components/ResizableSidebar";
+import { useRecording } from "@/src/context/RecordingContext";
+
+export const dynamic = 'force-dynamic';
+
+type Meeting = {
+  id: string;
+  title: string;
+  location: string | null;
+  start_at: string;
+  duration_minutes: number;
+  rrule: string | null;
+  minutes_reminder_frequency?: "none" | "daily" | "weekly" | null;
+};
+
+type Profile = { id: string; full_name: string | null; email?: string | null; color_hex: string | null };
+
+type Attendee = { email: string; full_name: string | null; user_id: string | null; color_hex?: string | null };
+
+type Column = { id: string; name: string; position: number };
+
+type StatusOpt = { id: string; name: string; position: number; color_hex?: string | null };
+
+type PriorityOpt = { id: string; name: string; position: number; color_hex?: string | null };
+
+type Task = {
+  id: string;
+  column_id: string;
+  title: string;
+  status: string;
+  priority: string;
+  owner_id: string | null;
+  owner_email?: string | null;
+  owner_name?: string | null;
+  start_date: string | null;
+  due_date: string | null;
+  notes: string | null;
+  position: number;
+  updated_at: string;
+};
+
+type AgendaItem = {
+  id: string;
+  code: string | null;
+  title: string;
+  description: string | null;
+  position: number;
+};
+
+type MinutesSession = {
+  id: string;
+  started_at: string;
+  ended_at: string | null;
+  pdf_path?: string | null;
+  ai_status?: string | null;
+  ai_error?: string | null;
+  session_number?: number | null;
+};
+
+type TaskEventPayload = {
+  title?: string;
+  text?: string;
+  from?: string;
+  to?: string;
+  changes?: Record<string, { from?: unknown; to?: unknown }>;
+  [key: string]: unknown;
+};
+
+type TaskEvent = {
+  id: string;
+  event_type: string;
+  payload: TaskEventPayload;
+  created_at: string;
+  created_by?: string | null;
+};
+
+type Milestone = {
+  id: string;
+  title: string;
+  description: string | null;
+  target_date: string | null;
+  status: string;
+  priority: string;
+  owner_id: string | null;
+  owner_email?: string | null;
+  owner_name?: string | null;
+  position: number;
+  updated_at: string;
+};
+
+type OngoingNote = {
+  id: string;
+  title: string;
+  content: string | null;
+  category: string | null;
+  position: number;
+  updated_at: string;
+};
+
+type LatestEventMap = Record<string, TaskEvent | undefined>;
+
+function sortByPos<T extends { position: number }>(arr: T[]): T[] {
+  return [...arr].sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+}
+
+function sortTasksByDueDate<T extends { due_date: string | null; position: number; updated_at?: string; id?: string }>(arr: T[]): T[] {
+  return [...arr].sort((a, b) => {
+    // Sort by due_date ascending, nulls last
+    if (a.due_date && !b.due_date) return -1;
+    if (!a.due_date && b.due_date) return 1;
+    if (a.due_date && b.due_date) {
+      const dateComp = a.due_date.localeCompare(b.due_date);
+      if (dateComp !== 0) return dateComp;
+    }
+    // Tie-breaker: position, then updated_at, then id
+    if ((a.position ?? 0) !== (b.position ?? 0)) {
+      return (a.position ?? 0) - (b.position ?? 0);
+    }
+    if (a.updated_at && b.updated_at) {
+      const updComp = b.updated_at.localeCompare(a.updated_at); // Descending (newest first)
+      if (updComp !== 0) return updComp;
+    }
+    if (a.id && b.id) {
+      return a.id.localeCompare(b.id);
+    }
+    return 0;
+  });
+}
+
+function sortMilestonesByTargetDate<T extends { target_date: string | null; position: number; updated_at?: string; id?: string }>(arr: T[]): T[] {
+  return [...arr].sort((a, b) => {
+    // Sort by target_date ascending, nulls last
+    if (a.target_date && !b.target_date) return -1;
+    if (!a.target_date && b.target_date) return 1;
+    if (a.target_date && b.target_date) {
+      const dateComp = a.target_date.localeCompare(b.target_date);
+      if (dateComp !== 0) return dateComp;
+    }
+    // Tie-breaker: position, then updated_at, then id
+    if ((a.position ?? 0) !== (b.position ?? 0)) {
+      return (a.position ?? 0) - (b.position ?? 0);
+    }
+    if (a.updated_at && b.updated_at) {
+      const updComp = b.updated_at.localeCompare(a.updated_at);
+      if (updComp !== 0) return updComp;
+    }
+    if (a.id && b.id) {
+      return a.id.localeCompare(b.id);
+    }
+    return 0;
+  });
+}
+
+function toISODate(d: string | null): string {
+  return d ? d : "";
+}
+
+function DroppableColumn({ id, children }: { id: string; children: React.ReactNode }) {
+  const { setNodeRef, isOver } = useDroppable({ id });
+  return (
+    <div
+      ref={setNodeRef}
+      className={["rounded-2xl border bg-base p-3 min-h-[200px]", isOver ? "ring-2 ring-emerald-500/40" : ""].join(
+        " "
+      )}
+    >
+      {children}
+    </div>
+  );
+}
+
+function DraggableTaskCard({ id, children }: { id: string; children: React.ReactNode }) {
+  const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({ id });
+  const style: React.CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    opacity: isDragging ? 0.65 : 1,
+  };
+  return (
+    <div ref={setNodeRef} style={style} {...listeners} {...attributes}>
+      {children}
+    </div>
+  );
+}
+
+// Calendar view helpers
+function getMonthDays(year: number, month: number): Date[] {
+  const firstDay = new Date(year, month, 1);
+  const lastDay = new Date(year, month + 1, 0);
+  const days: Date[] = [];
+  
+  // Add days from previous month to fill the first week
+  const firstDayOfWeek = firstDay.getDay();
+  for (let i = firstDayOfWeek - 1; i >= 0; i--) {
+    const d = new Date(year, month, -i);
+    days.push(d);
+  }
+  
+  // Add all days of current month
+  for (let i = 1; i <= lastDay.getDate(); i++) {
+    days.push(new Date(year, month, i));
+  }
+  
+  // Add days from next month to fill the last week
+  const remainingDays = 7 - (days.length % 7);
+  if (remainingDays < 7) {
+    for (let i = 1; i <= remainingDays; i++) {
+      days.push(new Date(year, month + 1, i));
+    }
+  }
+  
+  return days;
+}
+
+function isSameDay(d1: Date, d2: Date): boolean {
+  return (
+    d1.getFullYear() === d2.getFullYear() &&
+    d1.getMonth() === d2.getMonth() &&
+    d1.getDate() === d2.getDate()
+  );
+}
+
+function formatDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+}
+
+export default function MeetingDetailPage() {
+  const params = useParams<{ id: string }>();
+  const search = useSearchParams();
+  const meetingId = params.id;
+
+  const sb = useMemo(() => supabaseBrowser(), []);
+
+  const minutesReferenceLink = (process.env.NEXT_PUBLIC_MINUTES_REFERENCE_LINK || "").trim();
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 8 } }));
+
+  const [meeting, setMeeting] = useState<Meeting | null>(null);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [attendees, setAttendees] = useState<Attendee[]>([]);
+  const [columns, setColumns] = useState<Column[]>([]);
+  const [statuses, setStatuses] = useState<StatusOpt[]>([]);
+  const [priorities, setPriorities] = useState<PriorityOpt[]>([]);
+  const [tasks, setTasks] = useState<Task[]>([]);
+  const [milestones, setMilestones] = useState<Milestone[]>([]);
+  const [ongoingNotes, setOngoingNotes] = useState<OngoingNote[]>([]);
+  const [agenda, setAgenda] = useState<AgendaItem[]>([]);
+  const [currentSession, setCurrentSession] = useState<MinutesSession | null>(null);
+  const [prevSession, setPrevSession] = useState<MinutesSession | null>(null);
+  const [agendaNotes, setAgendaNotes] = useState<Record<string, string>>({});
+  const [prevAgendaNotes, setPrevAgendaNotes] = useState<Record<string, string>>({});
+  const [latestEventByTask, setLatestEventByTask] = useState<LatestEventMap>({});
+
+  // Kanban filters
+  const [tasksCollapsed, setTasksCollapsed] = useState(false);
+  const [milestonesCollapsed, setMilestonesCollapsed] = useState(false);
+  const [notesCollapsed, setNotesCollapsed] = useState(false);
+  const [tasksView, setTasksView] = useState<"board" | "calendar">("board");
+  
+  // Calendar state
+  const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
+  const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
+
+  // Advanced filtering for tasks
+  const [taskFilterStatuses, setTaskFilterStatuses] = useState<Set<string>>(new Set());
+  const [taskFilterOwners, setTaskFilterOwners] = useState<Set<string>>(new Set());
+  const [taskFilterPriorities, setTaskFilterPriorities] = useState<Set<string>>(new Set());
+
+  // Advanced filtering for milestones
+  const [milestoneFilterStatuses, setMilestoneFilterStatuses] = useState<Set<string>>(new Set());
+  const [milestoneFilterOwners, setMilestoneFilterOwners] = useState<Set<string>>(new Set());
+  const [milestoneFilterPriorities, setMilestoneFilterPriorities] = useState<Set<string>>(new Set());
+
+  // Advanced filtering for notes
+  const [noteFilterCategories, setNoteFilterCategories] = useState<Set<string>>(new Set());
+
+  // UI toggles
+  const [prevMeetingsOpen, setPrevMeetingsOpen] = useState(false);
+  const [sendNotesOpen, setSendNotesOpen] = useState(false);
+  const [prevSessions, setPrevSessions] = useState<MinutesSession[]>([]);
+  const [statusMgrOpen, setStatusMgrOpen] = useState(false);
+  const [priorityMgrOpen, setPriorityMgrOpen] = useState(false);
+  const [attendeesMgrOpen, setAttendeesMgrOpen] = useState(false);
+  const [emailSettingsOpen, setEmailSettingsOpen] = useState(false);
+  const [reminderFreq, setReminderFreq] = useState<
+  "none" | "daily" | "weekdays" | "weekly" | "biweekly" | "monthly"
+>("weekly");
+
+  // Start Meeting checklist modal
+  const [startMeetingOpen, setStartMeetingOpen] = useState(false);
+  const [attendeePresence, setAttendeePresence] = useState<Record<string, boolean>>({});
+  const [guestNames, setGuestNames] = useState<string[]>([]);
+  const [guestInput, setGuestInput] = useState("");
+  // Audio device selection
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([]);
+  const [selectedMicId, setSelectedMicId] = useState<string>('');
+  const [audioLevel, setAudioLevel] = useState<number>(0);
+  const [includeSystemAudio, setIncludeSystemAudio] = useState(false);
+  const [systemAudioSupported] = useState(() => {
+    return typeof navigator !== 'undefined' &&
+           typeof navigator.mediaDevices?.getDisplayMedia === 'function';
+  });
+  const testStreamRef = useRef<MediaStream | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const animFrameRef = useRef<number | null>(null);
+  const nextSessionNumber = useMemo(() => {
+    if (currentSession?.session_number) return currentSession.session_number;
+    const finalized = prevSessions.filter((s) => s.ended_at && s.pdf_path);
+    return finalized.length + 1;
+  }, [prevSessions, currentSession]);
+
+  // Column manager modal
+  const [columnManagerOpen, setColumnManagerOpen] = useState(false);
+  const [newColumnName, setNewColumnName] = useState("");
+
+  // Task modal
+  const [taskOpen, setTaskOpen] = useState(false);
+  const [editingTaskId, setEditingTaskId] = useState<string | null>(null);
+  const [tTitle, setTTitle] = useState("");
+  const [tStatus, setTStatus] = useState("In Progress");
+  const [tPriority, setTPriority] = useState("Normal");
+  const [tOwner, setTOwner] = useState<string | "">("");
+  const [tStart, setTStart] = useState("");
+  const [tDue, setTDue] = useState("");
+  const [tNotes, setTNotes] = useState("");
+  const [tColumnId, setTColumnId] = useState<string>("");
+  const [tEvents, setTEvents] = useState<TaskEvent[]>([]);
+  const [titleEditMode, setTitleEditMode] = useState(false);
+  const [commentText, setCommentText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
+
+  // Milestone modal
+  const [milestoneOpen, setMilestoneOpen] = useState(false);
+  const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
+  const [mTitle, setMTitle] = useState("");
+  const [mDescription, setMDescription] = useState("");
+  const [mTargetDate, setMTargetDate] = useState("");
+  const [mStatus, setMStatus] = useState("Pending");
+  const [mPriority, setMPriority] = useState("Normal");
+  const [mOwner, setMOwner] = useState<string | "">("");
+
+  // Ongoing Note modal
+  const [noteOpen, setNoteOpen] = useState(false);
+  const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
+  const [nTitle, setNTitle] = useState("");
+  const [nContent, setNContent] = useState("");
+  const [nCategory, setNCategory] = useState("");
+
+  // Note categories management
+  const [noteCategoriesOpen, setNoteCategoriesOpen] = useState(false);
+  const [noteCategories, setNoteCategories] = useState<string[]>([]);
+
+  // Agenda edit
+  const [agendaOpen, setAgendaOpen] = useState(false);
+
+  // Recording
+  const [recOpen, setRecOpen] = useState(false);
+  const [recMin, setRecMin] = useState(true);
+
+  const {
+    isRecording,
+    recSeconds,
+    recBusy,
+    recErr,
+    startRecording: globalStartRecording,
+    stopRecordingAndUpload: globalStopAndUpload,
+    concludeMeeting: globalConcludeMeeting,
+  } = useRecording();
+
+  // Audio device enumeration and preview functions
+  const loadAudioDevices = useCallback(async () => {
+    try {
+      const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      tempStream.getTracks().forEach(t => t.stop());
+
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const mics = devices.filter(d => d.kind === 'audioinput');
+      setAudioDevices(mics);
+
+      const saved = localStorage.getItem('rei_preferred_mic');
+      if (saved && mics.some(m => m.deviceId === saved)) {
+        setSelectedMicId(saved);
+      } else if (mics.length > 0) {
+        setSelectedMicId(mics[0].deviceId);
+      }
+    } catch (e) {
+      console.error('Failed to enumerate audio devices:', e);
+    }
+  }, []);
+
+  const stopAudioPreview = useCallback(() => {
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+    animFrameRef.current = null;
+    if (testStreamRef.current) {
+      testStreamRef.current.getTracks().forEach(t => t.stop());
+      testStreamRef.current = null;
+    }
+    analyserRef.current = null;
+    setAudioLevel(0);
+  }, []);
+
+  const startAudioPreview = useCallback((deviceId: string) => {
+    stopAudioPreview();
+
+    navigator.mediaDevices.getUserMedia({
+      audio: { deviceId: { exact: deviceId } }
+    }).then(stream => {
+      testStreamRef.current = stream;
+
+      const audioCtx = new AudioContext();
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+      source.connect(analyser);
+      analyserRef.current = analyser;
+
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+
+      function tick() {
+        analyser.getByteFrequencyData(dataArray);
+        const avg = dataArray.reduce((sum, v) => sum + v, 0) / dataArray.length;
+        setAudioLevel(avg / 255);
+        animFrameRef.current = requestAnimationFrame(tick);
+      }
+      tick();
+    }).catch(e => {
+      console.error('Audio preview failed:', e);
+    });
+  }, [stopAudioPreview]);
+
+  useEffect(() => {
+    if (startMeetingOpen) {
+      loadAudioDevices();
+    } else {
+      stopAudioPreview();
+    }
+    return () => stopAudioPreview();
+  }, [startMeetingOpen, loadAudioDevices, stopAudioPreview]);
+
+  useEffect(() => {
+    if (startMeetingOpen && selectedMicId) {
+      localStorage.setItem('rei_preferred_mic', selectedMicId);
+      startAudioPreview(selectedMicId);
+    }
+  }, [selectedMicId, startMeetingOpen, startAudioPreview]);
+
+  // Derive available note categories from existing notes + predefined categories
+  const availableNoteCategories = useMemo(() => {
+    const fromNotes = ongoingNotes
+      .filter((n) => n.category)
+      .map((n) => n.category!)
+      .filter((c, i, arr) => arr.indexOf(c) === i); // unique
+    const combined = [...new Set([...noteCategories, ...fromNotes])];
+    return combined.sort();
+  }, [noteCategories, ongoingNotes]);
+
+  // Memoized filtered collections to avoid redundant filtering
+  const filteredMilestones = useMemo(
+    () => applyMilestoneFilters(milestones),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [milestones, milestoneFilterStatuses, milestoneFilterOwners, milestoneFilterPriorities, attendees, priorities]
+  );
+
+  const filteredNotes = useMemo(
+    () => applyNoteFilters(ongoingNotes),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [ongoingNotes, noteFilterCategories, availableNoteCategories]
+  );
+
+  function ownerColor(ownerId: string | null): string {
+    if (!ownerId) return "#E5E7EB";
+    const p = profiles.find((x) => x.id === ownerId);
+    return p?.color_hex || "#E5E7EB";
+  }
+
+  function attendeeColor(email: string | null): string {
+    if (!email) return "#E5E7EB";
+    const a = attendees.find((x) => x.email?.toLowerCase() === email.toLowerCase());
+    return a?.color_hex || "#E5E7EB";
+  }
+
+  // Helper to get color for task/milestone owner
+  function getOwnerColor(task: { owner_id?: string | null; owner_email?: string | null }): string {
+    if (task.owner_id) {
+      return ownerColor(task.owner_id);
+    }
+    if (task.owner_email) {
+      return attendeeColor(task.owner_email);
+    }
+    return "#E5E7EB";
+  }
+
+  function priorityColor(priority: string): string {
+    const prio = priorities.find((p) => p.name === priority);
+    if (prio && prio.color_hex) {
+      return prio.color_hex;
+    }
+    // Fallback colors
+    const p = priority.toLowerCase();
+    if (p === "urgent") return "#DC2626"; // red-600
+    if (p === "high") return "#EA580C"; // orange-600
+    if (p === "normal") return "#2563EB"; // blue-600
+    if (p === "low") return "#16A34A"; // green-600
+    return "#6B7280"; // gray-500
+  }
+
+  function statusColor(statusName: string): string {
+    const status = statuses.find((s) => s.name === statusName);
+    if (status && status.color_hex) {
+      return status.color_hex;
+    }
+    // Default colors based on common status names
+    const s = statusName.toLowerCase();
+    if (s.includes("complete")) return "#16A34A"; // green
+    if (s.includes("progress") || s.includes("doing")) return "#2563EB"; // blue
+    if (s.includes("review")) return "#EA580C"; // orange
+    if (s.includes("wait")) return "#CA8A04"; // yellow
+    return "#6B7280"; // gray
+  }
+
+  // Helper function to format owner for form display
+  function formatOwnerForForm(ownerId: string | null | undefined, ownerEmail: string | null | undefined): string {
+    if (ownerId) return ownerId;
+    if (ownerEmail) return `email:${ownerEmail.toLowerCase()}`;
+    return "";
+  }
+
+function toTitleCase(s: string) {
+  return (s || "")
+    .toLowerCase()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+    .trim();
+}
+
+function nameFromEmail(email: string) {
+  const local = (email || "").split("@")[0] || "";
+  // alan.moore -> ["alan","moore"], alan_moore -> ["alan","moore"], alanmoore -> ["alanmoore"]
+  const parts = local
+    .replace(/[._-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .split(" ")
+    .filter(Boolean);
+
+  if (!parts.length) return "Unassigned";
+
+  const first = toTitleCase(parts[0]);
+  const last = parts.length > 1 ? toTitleCase(parts[parts.length - 1]) : "";
+  const lastInit = last ? `${last[0]}.` : "";
+
+  return lastInit ? `${first} ${lastInit}` : first;
+}
+
+function formatAttendeeLabel(fullName: string | null | undefined, email: string) {
+  const raw = (fullName || "").trim();
+
+  // If they already entered "Alan M." or similar, keep it.
+  if (raw && /^[A-Za-z]+(\s+[A-Za-z]\.)$/.test(raw)) return raw;
+
+  // If we have a full name like "Alan Moore", convert to "Alan M."
+  if (raw) {
+    const parts = raw.split(/\s+/g).filter(Boolean);
+    if (parts.length === 1) return toTitleCase(parts[0]);
+
+    const first = toTitleCase(parts[0]);
+    const last = toTitleCase(parts[parts.length - 1]);
+    const lastInit = last ? `${last[0]}.` : "";
+    return lastInit ? `${first} ${lastInit}` : first;
+  }
+
+  // Fallback: derive from email
+  return nameFromEmail(email);
+}
+
+function firstNameFromEmail(email: string | null | undefined): string | null {
+  const s = (email ?? "").trim();
+  if (!s || !s.includes("@")) return null;
+  const local = s.split("@")[0] ?? "";
+  const cleaned = local.replace(/[._-]+/g, " ").trim();
+  const parts = cleaned.split(/\s+/).filter(Boolean);
+  const guess = parts[0] ?? null;
+  if (!guess) return null;
+  return guess.charAt(0).toUpperCase() + guess.slice(1);
+}
+
+function profileName(userId: string | null | undefined): string {
+  if (!userId) return "Unknown User";
+  
+  // First try to find in profiles by id
+  const p = profiles.find((x) => x.id === userId);
+  if (p) {
+    // Return full name if available
+    if (p.full_name?.trim()) return p.full_name.trim();
+    
+    const fe = firstNameFromEmail(p.email);
+    if (fe) return fe;
+  }
+
+  // Try to find in attendees by user_id
+  const attendee = attendees.find((a) => a.user_id === userId);
+  if (attendee) {
+    // Return full name if available
+    if (attendee.full_name?.trim()) return attendee.full_name.trim();
+    
+    const aFe = firstNameFromEmail(attendee.email);
+    if (aFe) return aFe;
+    
+    // Return email as fallback
+    if (attendee.email) return attendee.email;
+  }
+
+  // Try to find in attendees by email (in case userId is actually an email)
+  if (userId.includes("@")) {
+    const attendeeByEmail = attendees.find((a) => a.email?.toLowerCase() === userId.toLowerCase());
+    if (attendeeByEmail) {
+      // Return full name if available
+      if (attendeeByEmail.full_name?.trim()) return attendeeByEmail.full_name.trim();
+      
+      return attendeeByEmail.email;
+    }
+  }
+
+  // Return user ID as last resort instead of "Unknown"
+  return userId.slice(0, 8) + "...";
+}
+
+function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): string {
+  const e = opts.event;
+  const p: TaskEventPayload = e.payload || {};
+
+  if (e.event_type === "created") {
+    const title = String(p?.title ?? "").trim();
+    return title ? `Created: ${title}` : "Created";
+  }
+
+  if (e.event_type === "deleted") return "Deleted";
+
+  if (e.event_type === "moved") {
+    const fromId = String(p?.from ?? "");
+    const toId = String(p?.to ?? "");
+    const from = opts.columns.find((c) => String(c.id) === fromId)?.name || fromId || "";
+    const to = opts.columns.find((c) => String(c.id) === toId)?.name || toId || "";
+    if (from && to) return `Moved from ${from} → ${to}`;
+    return "Moved";
+  }
+
+  if (e.event_type === "updated") {
+    const changes = p?.changes || {};
+    const keys = Object.keys(changes);
+    if (keys.length === 0) return "Updated";
+
+    const key = keys[0];
+    const ch = changes[key] || {};
+    const from = ch?.from;
+    const to = ch?.to;
+
+    const prettyKey = String(key)
+      .replace(/_/g, " ")
+      .replace(/\b\w/g, (c) => c.toUpperCase());
+
+    // Make column moves readable
+    if (key === "column_id") {
+      const fromName = opts.columns.find((c) => String(c.id) === String(from))?.name || String(from ?? "");
+      const toName = opts.columns.find((c) => String(c.id) === String(to))?.name || String(to ?? "");
+      return `Column changed: ${fromName} → ${toName}`;
+    }
+
+    if (typeof from === "undefined" && typeof to === "undefined") return `Updated: ${prettyKey}`;
+    return `${prettyKey} changed: ${String(from ?? "")} → ${String(to ?? "")}`;
+  }
+
+  // Fallback (keep it readable)
+  return String(e.event_type || "event");
+}
+
+  // Filter helpers
+  function applyTaskFilters(tasksToFilter: Task[]): Task[] {
+    return tasksToFilter.filter((t) => {
+      // Status filter (if size matches all statuses or is 0, show all; otherwise filter)
+      const allStatuses = statuses.length;
+      if (taskFilterStatuses.size > 0 && taskFilterStatuses.size < allStatuses && !taskFilterStatuses.has(t.status)) {
+        return false;
+      }
+
+      // Owner filter (if size matches all owners or is 0, show all; otherwise filter)
+      const allOwners = attendees.length;
+      if (taskFilterOwners.size > 0 && taskFilterOwners.size < allOwners) {
+        const taskOwner = formatOwnerForForm(t.owner_id, t.owner_email);
+        if (!taskFilterOwners.has(taskOwner)) {
+          return false;
+        }
+      }
+
+      // Priority filter (if size matches all priorities or is 0, show all; otherwise filter)
+      const allPriorities = priorities.length;
+      if (taskFilterPriorities.size > 0 && taskFilterPriorities.size < allPriorities && !taskFilterPriorities.has(t.priority)) {
+        return false;
+      }
+
+      return true;
+    });
+  }
+
+  function applyMilestoneFilters(milestonesToFilter: Milestone[]): Milestone[] {
+    const milestoneStatuses = ["Pending", "In Progress", "Completed", "Delayed"];
+    return milestonesToFilter.filter((m) => {
+      // Status filter
+      if (milestoneFilterStatuses.size > 0 && milestoneFilterStatuses.size < milestoneStatuses.length && !milestoneFilterStatuses.has(m.status)) {
+        return false;
+      }
+      // Owner filter
+      const allOwners = attendees.length;
+      if (milestoneFilterOwners.size > 0 && milestoneFilterOwners.size < allOwners) {
+        const milestoneOwner = formatOwnerForForm(m.owner_id, m.owner_email);
+        if (!milestoneFilterOwners.has(milestoneOwner)) {
+          return false;
+        }
+      }
+      // Priority filter
+      const allPriorities = priorities.length;
+      if (milestoneFilterPriorities.size > 0 && milestoneFilterPriorities.size < allPriorities && !milestoneFilterPriorities.has(m.priority)) {
+        return false;
+      }
+      return true;
+    });
+  }
+
+  function applyNoteFilters(notesToFilter: OngoingNote[]): OngoingNote[] {
+    const allCategories = availableNoteCategories.length;
+    if (noteFilterCategories.size === 0 || noteFilterCategories.size === allCategories) {
+      return notesToFilter;
+    }
+    return notesToFilter.filter((n) => n.category && noteFilterCategories.has(n.category));
+  }
+
+  function clearTaskFilters() {
+    setTaskFilterStatuses(new Set(statuses.map((s) => s.name)));
+    setTaskFilterOwners(new Set(attendees.map((a) => formatOwnerForForm(a.user_id, a.email))));
+    setTaskFilterPriorities(new Set(priorities.map((p) => p.name)));
+  }
+
+  function clearMilestoneFilters() {
+    const milestoneStatuses = ["Pending", "In Progress", "Completed", "Delayed"];
+    setMilestoneFilterStatuses(new Set(milestoneStatuses));
+    setMilestoneFilterOwners(new Set(attendees.map((a) => formatOwnerForForm(a.user_id, a.email))));
+    setMilestoneFilterPriorities(new Set(priorities.map((p) => p.name)));
+  }
+
+  function clearNoteFilters() {
+    setNoteFilterCategories(new Set(availableNoteCategories));
+  }
+
+
+  async function loadAgendaNotes(sessionId: string, isCurrent: boolean) {
+    const n = await sb.from("meeting_agenda_notes").select("agenda_item_id,notes").eq("session_id", sessionId);
+    if (n.error) return;
+    const map: Record<string, string> = {};
+    for (const row of n.data ?? []) {
+      const agendaItemId = row.agenda_item_id;
+      const notes = row.notes;
+      if (agendaItemId) {
+        map[agendaItemId] = notes ?? "";
+      }
+    }
+    if (isCurrent) setAgendaNotes(map);
+    else setPrevAgendaNotes(map);
+  }
+
+  async function loadLatestEvents(taskIds: string[]) {
+    if (taskIds.length === 0) {
+      setLatestEventByTask({});
+      return;
+    }
+    const ev = await sb
+      .from("meeting_task_events")
+      .select("id,task_id,event_type,payload,created_at,created_by")
+      .in("task_id", taskIds)
+      .order("created_at", { ascending: false });
+    if (ev.error) return;
+
+    const latest: LatestEventMap = {};
+    for (const row of ev.data ?? []) {
+      const taskId = row.task_id as string;
+      if (!latest[taskId]) latest[taskId] = row as TaskEvent;
+    }
+    setLatestEventByTask(latest);
+  }
+
+  async function ensureDefaultStatuses(meetingId: string) {
+    const s = await sb
+      .from("meeting_task_statuses")
+      .select("id,name,position,color_hex")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+
+    if (!s.error && (s.data?.length ?? 0) > 0) {
+      setStatuses((s.data ?? []) as StatusOpt[]);
+      return;
+    }
+
+    const seed = [
+      { meeting_id: meetingId, name: "In Progress", position: 1, color_hex: "#2563EB" },
+      { meeting_id: meetingId, name: "Needs Review", position: 2, color_hex: "#EA580C" },
+      { meeting_id: meetingId, name: "Waiting", position: 3, color_hex: "#CA8A04" },
+      { meeting_id: meetingId, name: "Completed", position: 4, color_hex: "#16A34A" },
+    ];
+    {
+  const ins = await sb.from("meeting_task_statuses").insert(seed);
+  // ignore if table doesn't exist yet / RLS / duplicates
+  if (ins.error) {
+    // no-op
+  }
+}
+
+    const again = await sb
+      .from("meeting_task_statuses")
+      .select("id,name,position,color_hex")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+
+    if (!again.error) setStatuses((again.data ?? []) as StatusOpt[]);
+
+  }
+
+  async function ensureDefaultPriorities(meetingId: string) {
+    const p = await sb
+      .from("meeting_task_priorities")
+      .select("id,name,position,color_hex")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+
+    if (!p.error && (p.data?.length ?? 0) > 0) {
+      setPriorities(p.data as PriorityOpt[]);
+      return;
+    }
+
+    const seed = [
+      { meeting_id: meetingId, name: "Urgent", position: 1, color_hex: "#DC2626" },
+      { meeting_id: meetingId, name: "High", position: 2, color_hex: "#EA580C" },
+      { meeting_id: meetingId, name: "Normal", position: 3, color_hex: "#2563EB" },
+      { meeting_id: meetingId, name: "Low", position: 4, color_hex: "#16A34A" },
+    ];
+    
+    const ins = await sb.from("meeting_task_priorities").insert(seed);
+    // ignore if table doesn't exist yet / RLS / duplicates
+    if (ins.error) {
+      // no-op
+    }
+
+    const again = await sb
+      .from("meeting_task_priorities")
+      .select("id,name,position,color_hex")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+
+    if (!again.error) setPriorities((again.data ?? []) as PriorityOpt[]);
+  }
+
+  async function loadAll() {
+    const m = await sb
+      .from("meetings")
+      .select("id,title,location,start_at,duration_minutes,rrule")
+      .eq("id", meetingId)
+      .single();
+    if (m.error) throw m.error;
+    setMeeting(m.data as Meeting);
+
+    const pr = await sb
+      .from("profiles")
+      .select("id,full_name,email,color_hex")
+      .order("created_at", { ascending: true });
+    if (!pr.error) setProfiles((pr.data ?? []) as Profile[]);
+
+    const at = await sb
+      .from("meeting_attendees")
+      .select("email,full_name,user_id,color_hex")
+      .eq("meeting_id", meetingId)
+      .order("created_at", { ascending: true });
+    if (!at.error) setAttendees((at.data ?? []) as Attendee[]);
+
+    const c = await sb
+      .from("meeting_task_columns")
+      .select("id,name,position")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+    if (c.error) throw c.error;
+    setColumns((c.data ?? []) as Column[]);
+
+    await ensureDefaultStatuses(meetingId);
+    await ensureDefaultPriorities(meetingId);
+
+    const t = await sb
+      .from("meeting_tasks")
+      .select("id,column_id,title,status,priority,owner_id,owner_email,owner_name,start_date,due_date,notes,position,updated_at")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+    if (t.error) throw t.error;
+    const taskRows = (t.data ?? []) as Task[];
+    setTasks(taskRows);
+    await loadLatestEvents(taskRows.map((x) => x.id));
+
+    // Load milestones
+    const mil = await sb
+      .from("meeting_milestones")
+      .select("id,title,description,target_date,status,priority,owner_id,owner_email,owner_name,position,updated_at")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+    if (!mil.error) setMilestones((mil.data ?? []) as Milestone[]);
+
+    // Load ongoing notes
+    const notes = await sb
+      .from("meeting_ongoing_notes")
+      .select("id,title,content,category,position,updated_at")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+    if (!notes.error) setOngoingNotes((notes.data ?? []) as OngoingNote[]);
+
+    const a = await sb
+      .from("meeting_agenda_items")
+      .select("id,code,title,description,position")
+      .eq("meeting_id", meetingId)
+      .order("position", { ascending: true });
+    if (a.error) throw a.error;
+    setAgenda((a.data ?? []) as AgendaItem[]);
+
+    const s = await sb
+      .from("meeting_minutes_sessions")
+      .select("id,started_at,ended_at,session_number")
+      .eq("meeting_id", meetingId)
+      .order("started_at", { ascending: false })
+      .limit(2);
+    if (s.error) throw s.error;
+    const sessions = (s.data ?? []) as MinutesSession[];
+    setCurrentSession(sessions[0] ?? null);
+    setPrevSession(sessions[1] ?? null);
+
+    if (sessions[0]?.id) await loadAgendaNotes(sessions[0].id, true);
+    if (sessions[1]?.id) await loadAgendaNotes(sessions[1].id, false);
+
+    const prevSessionId = search?.get("prevSessionId");
+    if (prevSessionId) {
+      await selectPreviousSession(prevSessionId);
+    }
+  }
+
+  useEffect(() => {
+    (async () => {
+      try {
+        await ensureSelfProfile();
+        await loadAll();
+      } catch (e: unknown) {
+        const error = e as Error;
+        setErr(error?.message ?? "Failed to load meeting");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId]);
+
+  // Initialize task filters when data is loaded
+  useEffect(() => {
+    if (statuses.length > 0 && taskFilterStatuses.size === 0) {
+      setTaskFilterStatuses(new Set(statuses.map((s) => s.name)));
+    }
+  }, [statuses, taskFilterStatuses.size]);
+
+  useEffect(() => {
+    if (attendees.length > 0 && taskFilterOwners.size === 0) {
+      setTaskFilterOwners(new Set(attendees.map((a) => formatOwnerForForm(a.user_id, a.email))));
+    }
+  }, [attendees, taskFilterOwners.size]);
+
+  useEffect(() => {
+    if (priorities.length > 0 && taskFilterPriorities.size === 0) {
+      setTaskFilterPriorities(new Set(priorities.map((p) => p.name)));
+    }
+  }, [priorities, taskFilterPriorities.size]);
+
+  // Initialize milestone filters when data is loaded
+  useEffect(() => {
+    const milestoneStatuses = ["Pending", "In Progress", "Completed", "Delayed"];
+    if (milestoneFilterStatuses.size === 0) {
+      setMilestoneFilterStatuses(new Set(milestoneStatuses));
+    }
+  }, [milestoneFilterStatuses.size]);
+
+  useEffect(() => {
+    if (attendees.length > 0 && milestoneFilterOwners.size === 0) {
+      setMilestoneFilterOwners(new Set(attendees.map((a) => formatOwnerForForm(a.user_id, a.email))));
+    }
+  }, [attendees, milestoneFilterOwners.size]);
+
+  useEffect(() => {
+    if (priorities.length > 0 && milestoneFilterPriorities.size === 0) {
+      setMilestoneFilterPriorities(new Set(priorities.map((p) => p.name)));
+    }
+  }, [priorities, milestoneFilterPriorities.size]);
+
+  // Initialize note filters when categories are available
+  useEffect(() => {
+    if (availableNoteCategories.length > 0 && noteFilterCategories.size === 0) {
+      setNoteFilterCategories(new Set(availableNoteCategories));
+    }
+  }, [availableNoteCategories, noteFilterCategories.size]);
+
+
+  async function ensureSelfProfile() {
+  const { data: userData } = await sb.auth.getUser();
+  const u = userData?.user;
+  if (!u?.id) return;
+
+  interface UserMetadata {
+    full_name?: string;
+    name?: string;
+    fullName?: string;
+  }
+
+  const metadata = (u.user_metadata as UserMetadata) || {};
+  const fullName = metadata.full_name || metadata.name || metadata.fullName || null;
+
+  await sb
+    .from("profiles")
+    .upsert(
+      { id: u.id, email: u.email ?? null, full_name: fullName, updated_at: new Date().toISOString() },
+      { onConflict: "id" }
+    );
+}
+
+  
+  async function ensureCurrentSession() {
+    if (currentSession && currentSession.ended_at === null) return currentSession;
+
+    const { data: userData } = await sb.auth.getUser();
+    const userId = userData?.user?.id ?? null;
+
+    const created = await sb
+      .from("meeting_minutes_sessions")
+      .insert({ meeting_id: meetingId, created_by: userId })
+      .select("id,started_at,ended_at,session_number")
+      .single();
+    if (created.error) throw created.error;
+
+    // Calculate session number based on finalized sessions (those with pdf_path and ended_at)
+    const countRes = await sb
+      .from("meeting_minutes_sessions")
+      .select("id", { count: 'exact' })
+      .eq("meeting_id", meetingId)
+      .not("pdf_path", "is", null)
+      .not("ended_at", "is", null);
+
+    const sessionNum = (countRes.count ?? 0) + 1;
+
+    await sb
+      .from("meeting_minutes_sessions")
+      .update({ session_number: sessionNum })
+      .eq("id", created.data.id);
+
+    const sessionData = { ...created.data, session_number: sessionNum } as MinutesSession;
+
+    setPrevSession(currentSession);
+    setCurrentSession(sessionData);
+    setPrevAgendaNotes(agendaNotes);
+    setAgendaNotes({});
+
+    return sessionData;
+  }
+
+  async function onNewMinutes() {
+    setBusy(true);
+    setErr(null);
+    try {
+      const session = await ensureCurrentSession();
+      await globalStartRecording({
+        meetingId,
+        sessionId: session.id,
+        meetingTitle: meeting?.title ?? "Meeting",
+      });
+      setRecOpen(true);
+      setRecMin(true);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to start minutes");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveAgendaNote(agendaItemId: string, notes: string) {
+    if (!currentSession?.id) return;
+    setAgendaNotes((m) => ({ ...m, [agendaItemId]: notes }));
+    await sb
+      .from("meeting_agenda_notes")
+      .upsert({
+        session_id: currentSession.id,
+        agenda_item_id: agendaItemId,
+        notes,
+        updated_at: new Date().toISOString(),
+      });
+  }
+
+  async function renameColumn(columnId: string, name: string) {
+    setColumns((prev) => prev.map((c) => (c.id === columnId ? { ...c, name } : c)));
+    await sb.from("meeting_task_columns").update({ name }).eq("id", columnId);
+  }
+
+  function openColumnManager() {
+    setColumnManagerOpen(true);
+    setNewColumnName("");
+    setErr(null);
+  }
+
+  async function addColumn() {
+    if (!newColumnName.trim()) {
+      setErr("Column name is required");
+      return;
+    }
+    setBusy(true);
+    setErr(null);
+    try {
+      const maxPos = Math.max(...columns.map((c) => c.position), 0);
+      const { data, error } = await sb
+        .from("meeting_task_columns")
+        .insert({
+          meeting_id: meetingId,
+          name: newColumnName.trim(),
+          position: maxPos + 1,
+        })
+        .select("id,name,position")
+        .single();
+      if (error) throw error;
+      setColumns((prev) => [...prev, data as Column]);
+      setNewColumnName("");
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to add column");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteColumn(columnId: string) {
+    const column = columns.find((c) => c.id === columnId);
+    if (!column) return;
+    
+    const taskCount = tasks.filter((t) => t.column_id === columnId).length;
+    if (taskCount > 0) {
+      const ok = window.confirm(
+        `This column contains ${taskCount} task(s). Deleting it will also delete all tasks in this column. Continue?`
+      );
+      if (!ok) return;
+    } else {
+      const ok = window.confirm(`Delete column "${column.name}"?`);
+      if (!ok) return;
+    }
+
+    setBusy(true);
+    setErr(null);
+    try {
+      const { error } = await sb.from("meeting_task_columns").delete().eq("id", columnId);
+      if (error) throw error;
+      setColumns((prev) => prev.filter((c) => c.id !== columnId));
+      setTasks((prev) => prev.filter((t) => t.column_id !== columnId));
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to delete column");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function moveColumn(columnId: string, direction: "left" | "right") {
+    const sorted = sortByPos(columns);
+    const index = sorted.findIndex((c) => c.id === columnId);
+    if (index === -1) return;
+    
+    const newIndex = direction === "left" ? index - 1 : index + 1;
+    if (newIndex < 0 || newIndex >= sorted.length) return;
+
+    // Swap positions
+    const newColumns = [...sorted];
+    [newColumns[index], newColumns[newIndex]] = [newColumns[newIndex], newColumns[index]];
+    
+    // Update positions
+    const updates = newColumns.map((c, i) => ({ ...c, position: i + 1 }));
+    setColumns(updates);
+
+    // Save to database
+    try {
+      for (const col of updates) {
+        await sb.from("meeting_task_columns").update({ position: col.position }).eq("id", col.id);
+      }
+    } catch (e: unknown) {
+      console.error("Failed to update column positions:", e);
+      await loadAll();
+    }
+  }
+
+
+  const cols = sortByPos(columns);
+  const statusOpts = sortByPos(statuses);
+  const priorityOpts = sortByPos(priorities);
+
+  function openNewTask(colId?: string) {
+    setEditingTaskId(null);
+    const defaultColId = sortByPos(columns)[0]?.id ?? "";
+    setTColumnId(colId ?? defaultColId);
+    setTTitle("");
+    setTStatus(statusOpts[0]?.name ?? "In Progress");
+    setTPriority(priorityOpts[0]?.name ?? "Normal");
+    setTOwner("");
+    setTStart("");
+    setTDue("");
+    setTNotes("");
+    setTEvents([]);
+    setCommentText("");
+    setTitleEditMode(true);
+    setErr(null);
+    setTaskOpen(true);
+  }
+
+  async function openEditTask(taskId: string) {
+    const task = tasks.find((t) => t.id === taskId);
+    if (!task) return;
+
+    setEditingTaskId(taskId);
+    setTColumnId(task.column_id);
+    setTTitle(task.title);
+    setTStatus(task.status);
+    setTPriority(task.priority);
+    setTOwner(formatOwnerForForm(task.owner_id, task.owner_email));
+    setTStart(toISODate(task.start_date));
+    setTDue(toISODate(task.due_date));
+    setTNotes(task.notes ?? "");
+    setTaskOpen(true);
+    setTitleEditMode(false);
+    setCommentText("");
+
+    const ev = await sb
+      .from("meeting_task_events")
+      .select("id,event_type,payload,created_at,created_by")
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: false })
+      .limit(50);
+    if (!ev.error) {
+      setTEvents((ev.data ?? []) as TaskEvent[]);
+      
+      // Load profiles for event creators if not already loaded
+      const eventUserIds = (ev.data ?? [])
+        .map((e) => e.created_by)
+        .filter((id): id is string => !!id && !profiles.find((p) => p.id === id));
+      
+      if (eventUserIds.length > 0) {
+        const pr = await sb
+          .from("profiles")
+          .select("id,full_name,email,color_hex")
+          .in("id", eventUserIds);
+        if (!pr.error && pr.data) {
+          setProfiles((prev) => [...prev, ...(pr.data as Profile[])]);
+        }
+      }
+    }
+  }
+
+  async function writeTaskEvent(taskId: string, type: string, payload: TaskEventPayload) {
+    const { data: userData } = await sb.auth.getUser();
+    const userId = userData?.user?.id ?? null;
+    await sb.from("meeting_task_events").insert({ task_id: taskId, event_type: type, payload, created_by: userId });
+  }
+
+  async function refreshLatestForTask(taskId: string) {
+    const ev = await sb
+      .from("meeting_task_events")
+      .select("id,event_type,payload,created_at,created_by")
+      .eq("task_id", taskId)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .single();
+    if (!ev.error) setLatestEventByTask((m) => ({ ...m, [taskId]: ev.data as TaskEvent }));
+  }
+
+  async function saveTask() {
+    setBusy(true);
+    setErr(null);
+    try {
+      if (!tTitle.trim()) throw new Error("Task title is required.");
+      if (!tColumnId) throw new Error("Column is required.");
+
+      const { data: userData } = await sb.auth.getUser();
+      const userId = userData?.user?.id ?? null;
+
+      const ownerIsEmail = (tOwner || "").startsWith("email:");
+      const ownerEmail = ownerIsEmail ? String(tOwner).slice("email:".length).trim().toLowerCase() : null;
+
+      const attendeeOwner = ownerIsEmail
+        ? attendees.find((a) => String(a.email || "").toLowerCase() === String(ownerEmail || "").toLowerCase())
+        : attendees.find((a) => a.user_id && String(a.user_id) === String(tOwner || ""));
+
+      const profileOwner = !ownerIsEmail && tOwner ? profiles.find((p) => String(p.id) === String(tOwner)) : null;
+
+      const owner_id = !ownerIsEmail && tOwner ? String(tOwner) : null;
+      const rawName =
+            (attendeeOwner?.full_name?.trim() ||
+              profileOwner?.full_name?.trim() ||
+              null) ?? null;
+          
+          const resolvedEmail =
+            (ownerEmail ||
+              attendeeOwner?.email?.trim() ||
+              profileOwner?.email?.trim() ||
+              null) ?? null;
+          
+          const owner_name =
+            resolvedEmail
+              ? formatAttendeeLabel(rawName, resolvedEmail)
+              : null;
+          
+          const owner_email = resolvedEmail;
+
+      if (!editingTaskId) {
+        const maxPos = Math.max(0, ...tasks.filter((x) => x.column_id === tColumnId).map((x) => x.position ?? 0));
+        const created = await sb
+          .from("meeting_tasks")
+          .insert({
+            meeting_id: meetingId,
+            column_id: tColumnId,
+            title: tTitle.trim(),
+            status: tStatus,
+            priority: tPriority,
+            owner_id,
+            owner_email,
+            owner_name,
+            start_date: tStart || null,
+            due_date: tDue || null,
+            notes: tNotes || null,
+            position: maxPos + 1,
+            created_by: userId,
+          })
+          .select("id,column_id,title,status,priority,owner_id,owner_email,owner_name,start_date,due_date,notes,position,updated_at")
+          .single();
+        if (created.error) throw created.error;
+
+        const newTask = created.data as Task;
+        setTasks((prev) => [...prev, newTask]);
+        await writeTaskEvent(newTask.id, "created", { title: newTask.title });
+        await refreshLatestForTask(newTask.id);
+      } else {
+        const before = tasks.find((x) => x.id === editingTaskId);
+
+        interface TaskPatch {
+          title: string;
+          status: string;
+          priority: string;
+          owner_id: string | null;
+          owner_email: string | null;
+          owner_name: string | null;
+          start_date: string | null;
+          due_date: string | null;
+          notes: string | null;
+          column_id: string;
+          updated_at: string;
+        }
+
+        const patch: TaskPatch = {
+          title: tTitle.trim(),
+          status: tStatus,
+          priority: tPriority,
+          owner_id,
+          owner_email,
+          owner_name,
+          start_date: tStart || null,
+          due_date: tDue || null,
+          notes: tNotes || null,
+          column_id: tColumnId,
+          updated_at: new Date().toISOString(),
+        };
+
+        const upd = await sb
+          .from("meeting_tasks")
+          .update(patch)
+          .eq("id", editingTaskId)
+          .select("id,column_id,title,status,priority,owner_id,owner_email,owner_name,start_date,due_date,notes,position,updated_at")
+          .single();
+        if (upd.error) throw upd.error;
+
+        const after = upd.data as Task;
+        setTasks((prev) => prev.map((x) => (x.id === after.id ? after : x)));
+
+        const changes: Record<string, { from: unknown; to: unknown }> = {};
+        if (before) {
+          for (const k of ["title", "status", "priority", "owner_id", "start_date", "due_date", "notes", "column_id"] as const) {
+            if (before[k] !== after[k]) changes[k] = { from: before[k], to: after[k] };
+          }
+        }
+        if (Object.keys(changes).length) {
+          await writeTaskEvent(after.id, "updated", { changes });
+          await refreshLatestForTask(after.id);
+        }
+      }
+
+      setTaskOpen(false);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to save task");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteTask() {
+    if (!editingTaskId) return;
+    const ok = window.confirm("Delete this task? This cannot be undone.");
+    if (!ok) return;
+    
+    setBusy(true);
+    setErr(null);
+    try {
+      // Delete associated events FIRST to avoid FK trigger conflict
+      const evDel = await sb.from("meeting_task_events").delete().eq("task_id", editingTaskId);
+      if (evDel.error) throw evDel.error;
+
+      // Now delete the task itself
+      const del = await sb.from("meeting_tasks").delete().eq("id", editingTaskId);
+      if (del.error) throw del.error;
+
+      setTasks((prev) => prev.filter((x) => x.id !== editingTaskId));
+      setLatestEventByTask((m) => {
+        const copy = { ...m };
+        delete copy[editingTaskId];
+        return copy;
+      });
+
+      setTaskOpen(false);
+      setEditingTaskId(null);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to delete task");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function addComment() {
+    if (!editingTaskId) return;
+    const text = commentText.trim();
+    if (!text) return;
+
+    setBusy(true);
+    try {
+      await writeTaskEvent(editingTaskId, "comment", { text });
+      setCommentText("");
+      const ev = await sb
+        .from("meeting_task_events")
+        .select("id,event_type,payload,created_at,created_by")
+        .eq("task_id", editingTaskId)
+        .order("created_at", { ascending: false })
+        .limit(50);
+      if (!ev.error) setTEvents((ev.data ?? []) as TaskEvent[]);
+      await refreshLatestForTask(editingTaskId);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function onDragEnd(ev: DragEndEvent) {
+    const activeId = String(ev.active.id);
+    const overId = ev.over ? String(ev.over.id) : null;
+    if (!overId) return;
+
+    const task = tasks.find((t) => t.id === activeId);
+    if (!task) return;
+    if (task.column_id === overId) return;
+
+    const maxPos = Math.max(0, ...tasks.filter((x) => x.column_id === overId).map((x) => x.position ?? 0));
+    const patch = { column_id: overId, position: maxPos + 1, updated_at: new Date().toISOString() };
+
+    const upd = await sb
+      .from("meeting_tasks")
+      .update(patch)
+      .eq("id", activeId)
+      .select("id,column_id,title,status,priority,owner_id,owner_email,owner_name,start_date,due_date,notes,position,updated_at")
+      .single();
+
+    if (!upd.error) {
+      setTasks((prev) => prev.map((x) => (x.id === activeId ? (upd.data as Task) : x)));
+      await writeTaskEvent(activeId, "moved", { from: task.column_id, to: overId });
+      await refreshLatestForTask(activeId);
+    }
+  }
+
+  // Milestone functions
+  function openNewMilestone() {
+    setEditingMilestoneId(null);
+    setMTitle("");
+    setMDescription("");
+    setMTargetDate("");
+    setMStatus("Pending");
+    setMPriority("Normal");
+    setMOwner("");
+    setMilestoneOpen(true);
+  }
+
+  async function openEditMilestone(milestoneId: string) {
+    const milestone = milestones.find((m) => m.id === milestoneId);
+    if (!milestone) return;
+    setEditingMilestoneId(milestoneId);
+    setMTitle(milestone.title);
+    setMDescription(milestone.description ?? "");
+    setMTargetDate(toISODate(milestone.target_date));
+    setMStatus(milestone.status);
+    setMPriority(milestone.priority);
+    setMOwner(formatOwnerForForm(milestone.owner_id, milestone.owner_email));
+    setMilestoneOpen(true);
+  }
+
+  async function saveMilestone() {
+    setBusy(true);
+    try {
+      const trimTitle = mTitle.trim();
+      if (!trimTitle) throw new Error("Title is required");
+
+      const { data: userData } = await sb.auth.getUser();
+      const userId = userData?.user?.id ?? null;
+
+      const ownerIsEmail = mOwner.startsWith("email:");
+      let owner_id: string | null = null;
+      let owner_email: string | null = null;
+      let owner_name: string | null = null;
+
+      if (mOwner && !ownerIsEmail) {
+        owner_id = mOwner;
+      } else if (ownerIsEmail) {
+        owner_email = mOwner.replace("email:", "");
+        const attendee = attendees.find((a) => String(a.email).toLowerCase() === owner_email);
+        if (attendee) {
+          owner_name = attendee.full_name;
+          owner_id = attendee.user_id || null;
+        }
+      }
+
+      if (!editingMilestoneId) {
+        const maxPos = Math.max(0, ...milestones.map((m) => m.position ?? 0));
+        const ins = await sb
+          .from("meeting_milestones")
+          .insert({
+            meeting_id: meetingId,
+            title: trimTitle,
+            description: mDescription || null,
+            target_date: mTargetDate || null,
+            status: mStatus,
+            priority: mPriority,
+            owner_id,
+            owner_email,
+            owner_name,
+            position: maxPos + 1,
+            created_by: userId,
+          })
+          .select("id,title,description,target_date,status,priority,owner_id,owner_email,owner_name,position,updated_at")
+          .single();
+        if (ins.error) throw ins.error;
+        setMilestones((prev) => [...prev, ins.data as Milestone]);
+      } else {
+        const patch = {
+          title: trimTitle,
+          description: mDescription || null,
+          target_date: mTargetDate || null,
+          status: mStatus,
+          priority: mPriority,
+          owner_id,
+          owner_email,
+          owner_name,
+          updated_at: new Date().toISOString(),
+        };
+
+        const upd = await sb
+          .from("meeting_milestones")
+          .update(patch)
+          .eq("id", editingMilestoneId)
+          .select("id,title,description,target_date,status,priority,owner_id,owner_email,owner_name,position,updated_at")
+          .single();
+        if (upd.error) throw upd.error;
+
+        const after = upd.data as Milestone;
+        setMilestones((prev) => prev.map((m) => (m.id === after.id ? after : m)));
+      }
+
+      setMilestoneOpen(false);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to save milestone");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteMilestone() {
+    if (!editingMilestoneId) return;
+    setBusy(true);
+    try {
+      const del = await sb.from("meeting_milestones").delete().eq("id", editingMilestoneId);
+      if (del.error) throw del.error;
+
+      setMilestones((prev) => prev.filter((m) => m.id !== editingMilestoneId));
+      setMilestoneOpen(false);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to delete milestone");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  // Ongoing Note functions
+  function openNewNote() {
+    setEditingNoteId(null);
+    setNTitle("");
+    setNContent("");
+    setNCategory("");
+    setNoteOpen(true);
+  }
+
+  async function openEditNote(noteId: string) {
+    const note = ongoingNotes.find((n) => n.id === noteId);
+    if (!note) return;
+    setEditingNoteId(noteId);
+    setNTitle(note.title);
+    setNContent(note.content ?? "");
+    setNCategory(note.category ?? "");
+    setNoteOpen(true);
+  }
+
+  async function saveNote() {
+    setBusy(true);
+    try {
+      const trimTitle = nTitle.trim();
+      if (!trimTitle) throw new Error("Title is required");
+
+      const { data: userData } = await sb.auth.getUser();
+      const userId = userData?.user?.id ?? null;
+
+      if (!editingNoteId) {
+        const maxPos = Math.max(0, ...ongoingNotes.map((n) => n.position ?? 0));
+        const ins = await sb
+          .from("meeting_ongoing_notes")
+          .insert({
+            meeting_id: meetingId,
+            title: trimTitle,
+            content: nContent || null,
+            category: nCategory || null,
+            position: maxPos + 1,
+            created_by: userId,
+          })
+          .select("id,title,content,category,position,updated_at")
+          .single();
+        if (ins.error) throw ins.error;
+        setOngoingNotes((prev) => [...prev, ins.data as OngoingNote]);
+      } else {
+        const patch = {
+          title: trimTitle,
+          content: nContent || null,
+          category: nCategory || null,
+          updated_at: new Date().toISOString(),
+        };
+
+        const upd = await sb
+          .from("meeting_ongoing_notes")
+          .update(patch)
+          .eq("id", editingNoteId)
+          .select("id,title,content,category,position,updated_at")
+          .single();
+        if (upd.error) throw upd.error;
+
+        const after = upd.data as OngoingNote;
+        setOngoingNotes((prev) => prev.map((n) => (n.id === after.id ? after : n)));
+      }
+
+      setNoteOpen(false);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to save note");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteNote() {
+    if (!editingNoteId) return;
+    setBusy(true);
+    try {
+      const del = await sb.from("meeting_ongoing_notes").delete().eq("id", editingNoteId);
+      if (del.error) throw del.error;
+
+      setOngoingNotes((prev) => prev.filter((n) => n.id !== editingNoteId));
+      setNoteOpen(false);
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to delete note");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function concludeMeeting() {
+  if (!currentSession?.id) return;
+  setBusy(true);
+  setErr(null);
+  setInfo(null);
+  try {
+    // Stop and upload recording if active, then reset recording state
+    await globalConcludeMeeting();
+
+    const res = await fetch("/api/meetings/ai/conclude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        meetingId,
+        sessionId: currentSession.id,
+        referenceLink: minutesReferenceLink || null,
+      }),
+    });
+
+    interface ConcludeResponse {
+      error?: string;
+      hasRecording?: boolean;
+    }
+    const j = await res.json().catch((): ConcludeResponse => ({}));
+    if (!res.ok) throw new Error(j?.error || "Failed to conclude meeting");
+
+    const s = await sb
+      .from("meeting_minutes_sessions")
+      .select("id,started_at,ended_at,pdf_path,ai_status,ai_error,session_number")
+      .eq("meeting_id", meetingId)
+      .order("started_at", { ascending: false });
+
+    if (!s.error) {
+      const sessions = (s.data as MinutesSession[]) ?? [];
+      const current = sessions.find((x) => !x.ended_at) ?? null;
+      const prev = sessions.find((x) => !!x.ended_at) ?? null;
+      setCurrentSession(current);
+      setPrevSession(prev);
+      setPrevSessions(sessions.filter((x) => !!x.ended_at));
+    }
+
+
+    if (j.hasRecording) {
+      setInfo("Meeting ended! AI is processing the recording — transcribing, summarizing, and generating the PDF. This may take a few minutes. You'll see the status update here automatically.");
+      // Auto-poll for completion without blocking the UI
+      void pollForAiCompletion(currentSession.id);
+    } else {
+      setInfo("Meeting ended successfully. No recording was captured.");
+    }
+  } catch (e: unknown) {
+    const error = e as Error;
+    setErr(error?.message ?? "Failed to conclude meeting");
+  } finally {
+    setBusy(false);
+  }
+}
+
+  async function pollForAiCompletion(pollSessionId: string) {
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const maxSeconds = Number(process.env.NEXT_PUBLIC_AI_POLL_MAX_SECONDS || "1800");
+    const intervalMs = Math.max(2000, Number(process.env.NEXT_PUBLIC_AI_POLL_INTERVAL_MS || "5000"));
+    const maxIters = Math.max(1, Math.floor((maxSeconds * 1000) / intervalMs));
+
+    for (let i = 0; i < maxIters; i++) {
+      await sleep(intervalMs);
+
+      const st = await sb
+        .from("meeting_minutes_sessions")
+        .select("id,ai_status,ai_error,pdf_path")
+        .eq("id", pollSessionId)
+        .maybeSingle();
+
+      if (!st.error && st.data) {
+        const status = String(st.data.ai_status ?? "");
+        const aiError = String(st.data.ai_error ?? "");
+
+        if (status === "done") {
+          await loadAgendaNotes(pollSessionId, true);
+          const s2 = await sb
+            .from("meeting_minutes_sessions")
+            .select("id,started_at,ended_at,pdf_path,ai_status,ai_error,session_number")
+            .eq("meeting_id", meetingId)
+            .order("started_at", { ascending: false });
+          if (!s2.error) {
+            const sessions2 = (s2.data as MinutesSession[]) ?? [];
+            setCurrentSession(sessions2.find((x) => !x.ended_at) ?? null);
+            setPrevSession(sessions2.find((x) => !!x.ended_at) ?? null);
+            setPrevSessions(sessions2.filter((x) => !!x.ended_at));
+          }
+
+          if (st.data.pdf_path) {
+            setInfo("✅ Meeting minutes are ready! The AI summary and PDF have been generated. Go to View ▾ → 'Send meeting notes' to review and send.");
+          } else {
+            setInfo("✅ AI processing complete! Notes have been summarized per agenda item.");
+          }
+          return;
+        }
+
+        if (status === "error") {
+          setErr("AI processing encountered an error: " + (aiError || "Unknown error. Check View ▾ → Previous Meetings for details."));
+          return;
+        }
+
+        if (status === "processing") {
+          setInfo("⏳ AI is transcribing and summarizing the recording...");
+        }
+      }
+    }
+
+    setInfo("AI processing is still running in the background. Check View ▾ → Previous Meetings to see when it completes.");
+  }
+
+  async function processRecording() {
+    if (!prevSession?.id) return;
+    setBusy(true);
+    setErr(null);
+    setInfo(null);
+    try {
+      const res = await fetch("/api/meetings/ai/process-recording", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          meetingId,
+          sessionId: prevSession.id,
+        }),
+      });
+
+      interface ProcessResponse {
+        error?: string;
+      }
+      const j = await res.json().catch((): ProcessResponse => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to start AI processing");
+
+      setInfo("AI processing started...");
+
+      const pollSessionId = prevSession.id;
+      const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      // NOTE: Using client-side polling as an interim solution.
+      // For production with many concurrent long recordings, consider:
+      // - Supabase Realtime subscriptions
+      // - Server-sent events (SSE)
+      // - Webhooks to update status externally
+      const maxSeconds = Number(process.env.NEXT_PUBLIC_AI_POLL_MAX_SECONDS || "1800");
+      const intervalMs = Math.max(2000, Number(process.env.NEXT_PUBLIC_AI_POLL_INTERVAL_MS || "4000"));
+      const maxIters = Math.max(1, Math.floor((maxSeconds * 1000) / intervalMs));
+
+      let reachedTerminal = false;
+      for (let i = 0; i < maxIters; i++) {
+        const st = await sb
+          .from("meeting_minutes_sessions")
+          .select("id,ai_status,ai_error,pdf_path")
+          .eq("id", pollSessionId)
+          .maybeSingle();
+
+        if (!st.error && st.data) {
+          const status = String(st.data.ai_status ?? "");
+          const pdfPath = String(st.data.pdf_path ?? "");
+          const aiError = String(st.data.ai_error ?? "");
+
+          if (status === "done") {
+            reachedTerminal = true;
+            await loadAgendaNotes(pollSessionId, true);
+            const s2 = await sb
+              .from("meeting_minutes_sessions")
+              .select("id,started_at,ended_at,pdf_path,ai_status,ai_error,session_number")
+              .eq("meeting_id", meetingId)
+              .order("started_at", { ascending: false });
+            if (!s2.error) {
+              const sessions2 = (s2.data as MinutesSession[]) ?? [];
+              const current2 = sessions2.find((x) => !x.ended_at) ?? null;
+              const prev2 = sessions2.find((x) => !!x.ended_at) ?? null;
+              setCurrentSession(current2);
+              setPrevSession(prev2);
+              setPrevSessions(sessions2.filter((x) => !!x.ended_at));
+            }
+            setInfo("AI processing complete!");
+            if (pdfPath) break;
+          }
+
+          if (status === "error") {
+            reachedTerminal = true;
+            setErr(aiError || "AI processing failed");
+            break;
+          }
+        }
+
+        await sleep(intervalMs);
+      }
+
+      if (!reachedTerminal) {
+        setInfo(
+          "AI processing is still running in the background. " +
+            "You can keep working and come back later—open 'View Previous Meetings' to check status and download the PDF once it's ready."
+        );
+      }
+    } catch (e: unknown) {
+      const error = e as Error;
+      setErr(error?.message ?? "Failed to process recording");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadPreviousSessions() {
+    const s = await sb
+      .from("meeting_minutes_sessions")
+      .select("id,started_at,ended_at,pdf_path,ai_status,ai_error,email_status,email_sent_at,session_number")
+      .eq("meeting_id", meetingId)
+      .order("started_at", { ascending: false })
+      .limit(50);
+    if (!s.error) setPrevSessions((s.data ?? []) as MinutesSession[]);
+  }
+
+  async function sendMeetingNotes(sessionId: string) {
+    try {
+      const { data: userData } = await sb.auth.getUser();
+      const sentById = userData?.user?.id ?? null;
+
+      const res = await fetch("/api/meetings/ai/send-notes", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ meetingId, sessionId, sentById }),
+      });
+      interface SendNotesResponse {
+        error?: string;
+      }
+      const j = await res.json().catch((): SendNotesResponse => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to send");
+
+      setInfo("Meeting notes sent.");
+      await loadPreviousSessions();
+    } catch (e: unknown) {
+      const error = e as Error;
+      alert(error?.message ?? "Failed to send meeting notes");
+    }
+  }
+
+    async function openSessionPdf(sessionId: string) {
+    try {
+      const res = await fetch("/api/meetings/ai/session-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId }),
+      });
+      interface SessionPdfResponse {
+        error?: string;
+        url?: string;
+      }
+      const j = await res.json().catch((): SessionPdfResponse => ({}));
+      if (!res.ok) throw new Error(j?.error || "Failed to get PDF");
+      if (j?.url) window.open(j.url, "_blank", "noopener,noreferrer");
+    } catch (e: unknown) {
+      const error = e as Error;
+      alert(error?.message ?? "Failed to open PDF");
+    }
+  }
+
+async function selectPreviousSession(sessionId: string) {
+    const s = await sb
+      .from("meeting_minutes_sessions")
+      .select("id,started_at,ended_at,pdf_path,ai_status,ai_error,session_number")
+      .eq("id", sessionId)
+      .single();
+    if (!s.error) setPrevSession(s.data as MinutesSession);
+    await loadAgendaNotes(sessionId, false);
+    setPrevMeetingsOpen(false);
+  }
+
+  async function updateSessionNumber(sessionId: string, newNumber: number) {
+    await sb
+      .from("meeting_minutes_sessions")
+      .update({ session_number: newNumber })
+      .eq("id", sessionId);
+    await loadPreviousSessions();
+  }
+
+  async function deleteSession(sessionId: string) {
+    if (!confirm("Delete this session? This will remove the session record and any associated PDF. This cannot be undone.")) return;
+
+    try {
+      const session = prevSessions.find(s => s.id === sessionId);
+      if (session?.pdf_path) {
+        await sb.storage.from('meeting-minutes-pdfs').remove([session.pdf_path]);
+      }
+
+      const { error } = await sb
+        .from("meeting_minutes_sessions")
+        .delete()
+        .eq("id", sessionId);
+
+      if (error) throw error;
+
+      setPrevSessions(prev => prev.filter(s => s.id !== sessionId));
+      setInfo("Session deleted.");
+    } catch (e: unknown) {
+      setErr((e as Error)?.message ?? "Failed to delete session");
+    }
+  }
+
+  async function saveReminderSettings() {
+    if (!meeting) return;
+    setBusy(true);
+    try {
+  const up = await sb
+    .from("meeting_email_settings")
+    .upsert(
+      { meeting_id: meetingId, reminder_frequency: reminderFreq, updated_at: new Date().toISOString() },
+      { onConflict: "meeting_id" }
+    );
+
+  // ignore if table not migrated yet / RLS / etc.
+  if (up.error) {
+    // no-op
+}
+
+      setEmailSettingsOpen(false);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadReminderSettings() {
+    const r = await sb.from("meeting_email_settings").select("reminder_frequency").eq("meeting_id", meetingId).single();
+    interface ReminderSettings {
+      reminder_frequency?: "none" | "daily" | "weekdays" | "weekly" | "biweekly" | "monthly";
+    }
+    if (!r.error && r.data) {
+      const settings = r.data as ReminderSettings;
+      if (settings.reminder_frequency) {
+        setReminderFreq(settings.reminder_frequency ?? "weekly");
+      }
+    }
+  }
+
+
+
+  async function addStatus(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const maxPos = Math.max(0, ...statusOpts.map((s) => s.position ?? 0));
+    const ins = await sb.from("meeting_task_statuses").insert({ meeting_id: meetingId, name: trimmed, position: maxPos + 1 }).select("id,name,position,color_hex").single();
+    if (!ins.error) setStatuses((prev) => [...prev, ins.data as StatusOpt]);
+  }
+
+  async function updateStatus(id: string, name: string) {
+    setStatuses((prev) => prev.map((s) => (s.id === id ? { ...s, name } : s)));
+    await sb.from("meeting_task_statuses").update({ name }).eq("id", id);
+  }
+
+  async function updateStatusColor(id: string, color_hex: string) {
+    setStatuses((prev) => prev.map((s) => (s.id === id ? { ...s, color_hex } : s)));
+    await sb.from("meeting_task_statuses").update({ color_hex }).eq("id", id);
+  }
+
+  async function deleteStatus(id: string) {
+    const statusName = statuses.find((s) => s.id === id)?.name;
+    if (!statusName) return;
+    const used = tasks.some((t) => t.status === statusName);
+    if (used) {
+      alert("That status is currently used by at least one task. Change those tasks first.");
+      return;
+    }
+    await sb.from("meeting_task_statuses").delete().eq("id", id);
+    setStatuses((prev) => prev.filter((s) => s.id !== id));
+  }
+
+  // Priority CRUD functions
+  async function addPriority(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const maxPos = Math.max(0, ...priorityOpts.map((p) => p.position ?? 0));
+    const ins = await sb.from("meeting_task_priorities").insert({ meeting_id: meetingId, name: trimmed, position: maxPos + 1 }).select("id,name,position,color_hex").single();
+    if (!ins.error) setPriorities((prev) => [...prev, ins.data as PriorityOpt]);
+  }
+
+  async function updatePriority(id: string, name: string) {
+    setPriorities((prev) => prev.map((p) => (p.id === id ? { ...p, name } : p)));
+    await sb.from("meeting_task_priorities").update({ name }).eq("id", id);
+  }
+
+  async function updatePriorityColor(id: string, color_hex: string) {
+    setPriorities((prev) => prev.map((p) => (p.id === id ? { ...p, color_hex } : p)));
+    await sb.from("meeting_task_priorities").update({ color_hex }).eq("id", id);
+  }
+
+  async function deletePriority(id: string) {
+    const priorityName = priorities.find((p) => p.id === id)?.name;
+    if (!priorityName) return;
+    const used = tasks.some((t) => t.priority === priorityName) || milestones.some((m) => m.priority === priorityName);
+    if (used) {
+      alert("That priority is currently used by at least one task or milestone. Change those first.");
+      return;
+    }
+    await sb.from("meeting_task_priorities").delete().eq("id", id);
+    setPriorities((prev) => prev.filter((p) => p.id !== id));
+  }
+
+  // Note category management functions
+  function addNoteCategory(name: string) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    if (noteCategories.includes(trimmed)) {
+      alert("A category with this name already exists.");
+      return;
+    }
+    setNoteCategories((prev) => [...prev, trimmed].sort());
+  }
+
+  function updateNoteCategory(oldName: string, newName: string) {
+    const trimmed = newName.trim();
+    if (!trimmed) return;
+    setNoteCategories((prev) => prev.map((c) => (c === oldName ? trimmed : c)).sort());
+    // Also update existing notes with this category
+    setOngoingNotes((prev) => prev.map((n) => (n.category === oldName ? { ...n, category: trimmed } : n)));
+    // Update in database
+    const notesToUpdate = ongoingNotes.filter((n) => n.category === oldName);
+    if (notesToUpdate.length > 0) {
+      Promise.all(
+        notesToUpdate.map((n) => sb.from("meeting_ongoing_notes").update({ category: trimmed }).eq("id", n.id))
+      ).catch((err) => {
+        console.error("Failed to update note categories in database:", err);
+      });
+    }
+  }
+
+  function deleteNoteCategory(name: string) {
+    const used = ongoingNotes.some((n) => n.category === name);
+    if (used) {
+      alert("This category is currently used by at least one note. Change those notes first.");
+      return;
+    }
+    setNoteCategories((prev) => prev.filter((c) => c !== name));
+  }
+
+  // Attendee CRUD functions
+  async function addAttendee(email: string, fullName: string, color: string) {
+    const trimmedEmail = email.trim().toLowerCase();
+    const trimmedName = fullName.trim();
+    if (!trimmedEmail) return;
+    const exists = attendees.find((a) => a.email?.toLowerCase() === trimmedEmail);
+    if (exists) {
+      alert("An attendee with this email already exists.");
+      return;
+    }
+    const ins = await sb.from("meeting_attendees").insert({ 
+      meeting_id: meetingId, 
+      email: trimmedEmail, 
+      full_name: trimmedName || null,
+      color_hex: color || null
+    }).select("email,full_name,user_id,color_hex").single();
+    if (!ins.error) setAttendees((prev) => [...prev, ins.data]);
+  }
+
+  async function updateAttendee(email: string, fullName: string, color: string) {
+    setAttendees((prev) => prev.map((a) => 
+      a.email?.toLowerCase() === email.toLowerCase() 
+        ? { ...a, full_name: fullName, color_hex: color }
+        : a
+    ));
+    await sb.from("meeting_attendees")
+      .update({ full_name: fullName, color_hex: color })
+      .eq("meeting_id", meetingId)
+      .eq("email", email);
+  }
+
+  async function deleteAttendee(email: string) {
+    const used = tasks.some((t) => t.owner_email?.toLowerCase() === email.toLowerCase()) ||
+                 milestones.some((m) => m.owner_email?.toLowerCase() === email.toLowerCase());
+    if (used) {
+      alert("This attendee is assigned to tasks or milestones. Unassign them first.");
+      return;
+    }
+    await sb.from("meeting_attendees")
+      .delete()
+      .eq("meeting_id", meetingId)
+      .eq("email", email);
+    setAttendees((prev) => prev.filter((a) => a.email?.toLowerCase() !== email.toLowerCase()));
+  }
+
+  useEffect(() => {
+    void loadReminderSettings();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [meetingId]);
+
+  return (
+    <PageShell>
+      {!meeting ? (
+        <div className="text-sm text-slate-400">Loading...</div>
+      ) : (
+        <div className="space-y-6">
+          <div className="flex items-start justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-semibold">{meeting.title}</h1>
+              <div className="text-sm text-slate-400">
+                {prettyDate(meeting.start_at)} • {meeting.duration_minutes} min
+                {meeting.location ? ` • ${meeting.location}` : ""}
+              </div>
+              {meeting.rrule && <div className="text-xs text-slate-500 mt-1">Recurring: {meeting.rrule}</div>}
+              {isRecording && (
+                <div className="mt-2 flex items-center gap-1.5 text-xs text-red-600 font-medium">
+                  <span className="inline-block w-2 h-2 rounded-full bg-red-500/100 animate-pulse" />
+                  Recording — {Math.floor(recSeconds / 60)}m {recSeconds % 60}s
+                </div>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-2 justify-end">
+              {/* Edit dropdown */}
+              <Dropdown
+                trigger={<Button variant="ghost">Edit ▾</Button>}
+                items={[
+                  { label: "Edit agenda", onClick: () => setAgendaOpen(true) },
+                  { label: "Task statuses", onClick: () => setStatusMgrOpen(true) },
+                  { label: "Task priorities", onClick: () => setPriorityMgrOpen(true) },
+                  { label: "Edit note categories", onClick: () => setNoteCategoriesOpen(true) },
+                  { label: "Edit attendees", onClick: () => setAttendeesMgrOpen(true) },
+                  { label: "Email settings", onClick: () => setEmailSettingsOpen(true) },
+                ]}
+              />
+              
+              {/* Meeting dropdown */}
+              <Dropdown
+                trigger={<Button>Meeting ▾</Button>}
+                items={[
+                  {
+                    label: currentSession && !currentSession.ended_at ? "Start New Session" : "Start Meeting",
+                    onClick: () => {
+                      const presence: Record<string, boolean> = {};
+                      attendees.forEach(a => { presence[a.email] = true; });
+                      setAttendeePresence(presence);
+                      setGuestNames([]);
+                      setGuestInput("");
+                      setStartMeetingOpen(true);
+                    },
+                    disabled: busy,
+                  },
+                  {
+                    label: "End Meeting",
+                    onClick: concludeMeeting,
+                    disabled: busy || !currentSession || !!currentSession.ended_at,
+                  },
+                ]}
+              />
+              
+              {/* View dropdown */}
+              <Dropdown
+                trigger={<Button variant="ghost">View ▾</Button>}
+                items={[
+                  { 
+                    label: "Send meeting notes", 
+                    onClick: async () => {
+                      await loadPreviousSessions();
+                      setSendNotesOpen(true);
+                    }
+                  },
+                  { 
+                    label: "View Previous Meetings", 
+                    onClick: async () => {
+                      await loadPreviousSessions();
+                      setPrevMeetingsOpen(true);
+                    }
+                  },
+                ]}
+              />
+            </div>
+          </div>
+
+          {err && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-2">{err}</div>}
+          {info && <div className="text-sm text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded-lg p-2">{info}</div>}
+
+          <ResizableSidebar
+            storageKey={`meetings:${meetingId}:agenda`}
+            defaultWidth={420}
+            minWidth={300}
+            maxWidth={620}
+            collapsedWidth={56}
+            sidebar={
+              <div className="space-y-6">
+                <Card title="Agenda + Minutes">
+<div className="space-y-4">
+                    {agenda.length === 0 ? (
+                      <div className="text-sm text-slate-400">No agenda topics yet.</div>
+                    ) : (
+                      sortByPos(agenda).map((a) => (
+                        <div key={a.id} className="rounded-xl border p-3">
+                          <div className="flex items-center justify-between gap-2">
+                            <div className="text-sm font-semibold">
+                              {a.code ? `${a.code} - ` : ""}
+                              {a.title}
+                            </div>
+                            {currentSession ? <Pill>Current</Pill> : <Pill>No session</Pill>}
+                          </div>
+                          {a.description && <div className="text-xs text-slate-400 mt-1">{a.description}</div>}
+
+                          <div className="mt-3 grid gap-2">
+                            <div>
+                              <div className="text-xs text-slate-500 mb-1">Meeting minutes (current)</div>
+                              <Textarea
+                                rows={4}
+                                value={agendaNotes[a.id] ?? ""}
+                                onChange={(e) => saveAgendaNote(a.id, e.target.value)}
+                                placeholder="Notes for this agenda topic..."
+                                disabled={!currentSession || !!currentSession.ended_at}
+                              />
+                            </div>
+                            <div>
+                              <div className="text-xs text-slate-500 mb-1">Previous meeting minutes</div>
+                              <Textarea rows={3} value={prevAgendaNotes[a.id] ?? ""} readOnly className="bg-base" />
+                            </div>
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </Card>
+              </div>
+            }
+          >
+            <div className="space-y-6">
+              <Card
+                title="Tasks Board"
+                right={
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-slate-500 hover:text-slate-300 transition-colors"
+                      onClick={() => setTasksCollapsed((v) => !v)}
+                      title={tasksCollapsed ? "Expand" : "Collapse"}
+                    >
+                      {tasksCollapsed ? (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                      )}
+                    </button>
+                    <div className="flex border rounded-lg overflow-hidden">
+                      <button
+                        type="button"
+                        className={`px-3 py-1 text-sm ${
+                          tasksView === "board"
+                            ? "bg-blue-500/100 text-white"
+                            : "bg-surface text-slate-300 hover:bg-base"
+                        }`}
+                        onClick={() => setTasksView("board")}
+                      >
+                        Board
+                      </button>
+                      <button
+                        type="button"
+                        className={`px-3 py-1 text-sm ${
+                          tasksView === "calendar"
+                            ? "bg-blue-500/100 text-white"
+                            : "bg-surface text-slate-300 hover:bg-base"
+                        }`}
+                        onClick={() => setTasksView("calendar")}
+                      >
+                        Calendar
+                      </button>
+                    </div>
+                    <Button variant="ghost" onClick={openColumnManager}>
+                      Manage Columns
+                    </Button>
+                    <Button variant="ghost" onClick={() => openNewTask()}>
+                      + New Task
+                    </Button>
+                  </div>
+                }
+              >
+                {!tasksCollapsed && (
+                <>
+                  {/* Filter bar */}
+                  <div className="mb-4 p-3 bg-base rounded-lg border">
+                    <div className="grid gap-3 md:grid-cols-4">
+                      <div>
+                        <label className="text-xs text-slate-400 mb-1 block">Status</label>
+                        <MultiSelectDropdown
+                          label="Status"
+                          options={statuses.map((s) => ({ value: s.name, label: s.name }))}
+                          selected={taskFilterStatuses}
+                          onChange={setTaskFilterStatuses}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 mb-1 block">Owner</label>
+                        <MultiSelectDropdown
+                          label="Owner"
+                          options={attendees.map((a) => ({
+                            value: formatOwnerForForm(a.user_id, a.email),
+                            label: a.full_name || a.email,
+                          }))}
+                          selected={taskFilterOwners}
+                          onChange={setTaskFilterOwners}
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-400 mb-1 block">Priority</label>
+                        <MultiSelectDropdown
+                          label="Priority"
+                          options={priorities.map((p) => ({ value: p.name, label: p.name }))}
+                          selected={taskFilterPriorities}
+                          onChange={setTaskFilterPriorities}
+                        />
+                      </div>
+                      <div className="flex items-end">
+                        <Button
+                          variant="ghost"
+                          onClick={clearTaskFilters}
+                        >
+                          Clear Filters
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                {tasksView === "board" ? (
+                <DndContext sensors={sensors} onDragEnd={onDragEnd}>
+                  <div className="overflow-x-auto overflow-y-hidden max-w-full">
+                    <div
+                      className="grid gap-4 min-w-max"
+                      style={{ gridTemplateColumns: `repeat(${Math.max(cols.length, 1)}, 280px)` }}
+                    >
+                      {cols.map((c) => (
+                        <DroppableColumn key={c.id} id={c.id}>
+                          <div className="flex items-center justify-between gap-2 mb-2">
+                            <Input
+                              value={c.name}
+                              onChange={(e) => {
+                                const name = e.target.value;
+                                setColumns((prev) => prev.map((x) => (x.id === c.id ? { ...x, name } : x)));
+                              }}
+                              onBlur={async (e) => {
+                                await renameColumn(c.id, e.target.value);
+                              }}
+                            />
+                          </div>
+
+                          <div className="space-y-2">
+                            {sortTasksByDueDate(
+                              applyTaskFilters(tasks.filter((t) => t.column_id === c.id))
+                            ).map((t) => {
+                              const le = latestEventByTask[t.id];
+                              return (
+                                <DraggableTaskCard key={t.id} id={t.id}>
+                                  <div
+                                    className="rounded-xl border bg-surface p-3 cursor-pointer select-none"
+                                    style={{ borderLeft: `6px solid ${getOwnerColor(t)}` }}
+                                    onClick={() => openEditTask(t.id)}
+                                  >
+                                    <div className="text-sm font-semibold">{t.title}</div>
+                                    <div className="mt-1 flex flex-wrap gap-2">
+                                      <span 
+                                        className="rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                                        style={{ backgroundColor: statusColor(t.status) }}
+                                      >
+                                        {t.status}
+                                      </span>
+                                      <span 
+                                        className="rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                                        style={{ backgroundColor: priorityColor(t.priority) }}
+                                      >
+                                        {t.priority}
+                                      </span>
+                                      {t.due_date && <Pill>Due {t.due_date}</Pill>}
+                                    </div>
+
+                                    {le && (
+                                      <div className="mt-2 text-xs text-slate-500">
+                                        Updated {prettyDate(le.created_at)} by {profileName(le.created_by ?? null)}
+                                      </div>
+                                    )}
+                                  </div>
+                                </DraggableTaskCard>
+                              );
+                            })}
+                          </div>
+                        </DroppableColumn>
+                      ))}
+                    </div>
+                  </div>
+                </DndContext>
+                ) : (
+                  <CalendarView
+                    tasks={applyTaskFilters(tasks)}
+                    milestones={applyMilestoneFilters(milestones)}
+                    month={calendarMonth}
+                    year={calendarYear}
+                    onMonthChange={(m) => setCalendarMonth(m)}
+                    onYearChange={(y) => setCalendarYear(y)}
+                    onTaskClick={openEditTask}
+                    onMilestoneClick={openEditMilestone}
+                    statusColor={statusColor}
+                    priorityColor={priorityColor}
+                    getOwnerColor={getOwnerColor}
+                  />
+                )}
+                </>
+                )}
+              </Card>
+
+              {/* Milestones Section */}
+              <Card
+                title="Milestones"
+                right={
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-slate-500 hover:text-slate-300 transition-colors"
+                      onClick={() => setMilestonesCollapsed((v) => !v)}
+                      title={milestonesCollapsed ? "Expand" : "Collapse"}
+                    >
+                      {milestonesCollapsed ? (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                      )}
+                    </button>
+                    <Button variant="ghost" onClick={openNewMilestone}>
+                      + New Milestone
+                    </Button>
+                  </div>
+                }
+              >
+                {!milestonesCollapsed && (
+                  <>
+                    {/* Filter bar */}
+                    <div className="mb-4 p-3 bg-base rounded-lg border">
+                      <div className="grid gap-3 md:grid-cols-4">
+                        <div>
+                          <label className="text-xs text-slate-400 mb-1 block">Status</label>
+                          <MultiSelectDropdown
+                            label="Status"
+                            options={[
+                              { value: "Pending", label: "Pending" },
+                              { value: "In Progress", label: "In Progress" },
+                              { value: "Completed", label: "Completed" },
+                              { value: "Delayed", label: "Delayed" },
+                            ]}
+                            selected={milestoneFilterStatuses}
+                            onChange={setMilestoneFilterStatuses}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-400 mb-1 block">Owner</label>
+                          <MultiSelectDropdown
+                            label="Owner"
+                            options={attendees.map((a) => ({
+                              value: formatOwnerForForm(a.user_id, a.email),
+                              label: a.full_name || a.email,
+                            }))}
+                            selected={milestoneFilterOwners}
+                            onChange={setMilestoneFilterOwners}
+                          />
+                        </div>
+                        <div>
+                          <label className="text-xs text-slate-400 mb-1 block">Priority</label>
+                          <MultiSelectDropdown
+                            label="Priority"
+                            options={priorities.map((p) => ({ value: p.name, label: p.name }))}
+                            selected={milestoneFilterPriorities}
+                            onChange={setMilestoneFilterPriorities}
+                          />
+                        </div>
+                        <div className="flex items-end">
+                          <Button
+                            variant="ghost"
+                            onClick={clearMilestoneFilters}
+                          >
+                            Clear
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-3">
+                    {filteredMilestones.length === 0 ? (
+                      <div className="text-sm text-slate-400">No milestones match filters.</div>
+                    ) : (
+                      sortMilestonesByTargetDate(filteredMilestones).map((m) => (
+                        <div
+                          key={m.id}
+                          className="rounded-xl border bg-surface p-3 cursor-pointer"
+                          style={{ borderLeft: `6px solid ${getOwnerColor(m)}` }}
+                          onClick={() => openEditMilestone(m.id)}
+                        >
+                          <div className="text-sm font-semibold">{m.title}</div>
+                          {m.description && <div className="text-xs text-slate-400 mt-1">{m.description}</div>}
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            <span 
+                              className="rounded-full px-2 py-0.5 text-xs font-medium text-white"
+                              style={{ backgroundColor: priorityColor(m.priority) }}
+                            >
+                              {m.priority}
+                            </span>
+                            <Pill>{m.status}</Pill>
+                            {m.target_date && <Pill>Target: {m.target_date}</Pill>}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  </>
+                )}
+              </Card>
+
+              {/* Ongoing Notes Section */}
+              <Card
+                title="Ongoing Notes"
+                right={
+                  <div className="flex items-center gap-3">
+                    <button
+                      type="button"
+                      className="text-slate-500 hover:text-slate-300 transition-colors"
+                      onClick={() => setNotesCollapsed((v) => !v)}
+                      title={notesCollapsed ? "Expand" : "Collapse"}
+                    >
+                      {notesCollapsed ? (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                        </svg>
+                      ) : (
+                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 15l7-7 7 7" />
+                        </svg>
+                      )}
+                    </button>
+                    <Button variant="ghost" onClick={openNewNote}>
+                      + New Note
+                    </Button>
+                  </div>
+                }
+              >
+                {!notesCollapsed && (
+                  <>
+                    {/* Filter bar */}
+                    {availableNoteCategories.length > 0 && (
+                      <div className="mb-3 p-3 bg-base rounded-lg border">
+                        <div className="grid gap-3 md:grid-cols-2">
+                          <div>
+                            <label className="text-xs text-slate-400 mb-1 block">Category</label>
+                            <MultiSelectDropdown
+                              label="Category"
+                              options={availableNoteCategories.map((cat) => ({ value: cat, label: cat }))}
+                              selected={noteFilterCategories}
+                              onChange={setNoteFilterCategories}
+                            />
+                          </div>
+                          <div className="flex items-end">
+                            <Button
+                              variant="ghost"
+                              onClick={clearNoteFilters}
+                            >
+                              Clear
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-3">
+                    {filteredNotes.length === 0 ? (
+                      <div className="text-sm text-slate-400">No notes match filter.</div>
+                    ) : (
+                      sortByPos(filteredNotes).map((n) => (
+                        <div
+                          key={n.id}
+                          className="rounded-xl border bg-surface p-3 cursor-pointer"
+                          onClick={() => openEditNote(n.id)}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="text-sm font-semibold">{n.title}</div>
+                            {n.category && <Pill>{n.category}</Pill>}
+                          </div>
+                          {n.content && (
+                            <div className="text-xs text-slate-400 mt-2 whitespace-pre-wrap line-clamp-3">
+                              {n.content}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  </>
+                )}
+              </Card>
+            </div>
+          </ResizableSidebar>
+
+          {/* Task Modal */}
+          <Modal
+            open={taskOpen}
+            title={editingTaskId ? "Edit Task" : "New Task"}
+            onClose={() => setTaskOpen(false)}
+            footer={
+              <>
+                {editingTaskId && (
+                  <Button variant="ghost" onClick={deleteTask} disabled={busy}>
+                    Delete
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => setTaskOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={saveTask} disabled={busy}>
+                  {busy ? "Saving..." : "Save"}
+                </Button>
+              </>
+            }
+          >
+            <div className="max-h-[70vh] overflow-auto pr-1">
+              <div className="space-y-4">
+              <div className="rounded-xl border p-3">
+                {!titleEditMode ? (
+                  <div className="relative">
+                    <div className="text-center text-xl md:text-2xl font-semibold leading-tight tracking-tight text-slate-100">
+                      {tTitle || "Untitled task"}
+                    </div>
+                    <button
+                      className="absolute right-0 top-0 rounded-lg border px-2 py-1 text-sm hover:bg-base"
+                      onClick={() => setTitleEditMode(true)}
+                      aria-label="Edit title"
+                      type="button"
+                    >
+                      ✎
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid gap-2">
+                    <label className="text-xs text-slate-400">Title</label>
+                    <Input
+                      value={tTitle}
+                      onChange={(e) => setTTitle(e.target.value)}
+                      onBlur={() => setTitleEditMode(false)}
+                      autoFocus
+                    />
+                    <div className="text-xs text-slate-500">Click outside the field to finish editing.</div>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid gap-3 md:grid-cols-2">
+                <div>
+                  <label className="text-xs text-slate-400">Status</label>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                    style={{ 
+                      backgroundColor: statusColor(tStatus), 
+                      color: 'white',
+                      fontWeight: '500'
+                    }}
+                    value={tStatus}
+                    onChange={(e) => setTStatus(e.target.value)}
+                  >
+                    {statusOpts.length ? (
+                      statusOpts.map((s) => (
+                        <option 
+                          key={s.id} 
+                          value={s.name}
+                          style={{ 
+                            backgroundColor: s.color_hex || statusColor(s.name),
+                            color: 'white'
+                          }}
+                        >
+                          {s.name}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option style={{ backgroundColor: '#2563EB', color: 'white' }}>In Progress</option>
+                        <option style={{ backgroundColor: '#EA580C', color: 'white' }}>Needs Review</option>
+                        <option style={{ backgroundColor: '#CA8A04', color: 'white' }}>Waiting</option>
+                        <option style={{ backgroundColor: '#16A34A', color: 'white' }}>Completed</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400">Priority</label>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                    style={{ 
+                      backgroundColor: priorityColor(tPriority), 
+                      color: 'white',
+                      fontWeight: '500'
+                    }}
+                    value={tPriority}
+                    onChange={(e) => setTPriority(e.target.value)}
+                  >
+                    {priorityOpts.length ? (
+                      priorityOpts.map((p) => (
+                        <option 
+                          key={p.id} 
+                          value={p.name}
+                          style={{ 
+                            backgroundColor: p.color_hex || priorityColor(p.name),
+                            color: 'white'
+                          }}
+                        >
+                          {p.name}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option style={{ backgroundColor: '#DC2626', color: 'white' }}>Urgent</option>
+                        <option style={{ backgroundColor: '#EA580C', color: 'white' }}>High</option>
+                        <option style={{ backgroundColor: '#2563EB', color: 'white' }}>Normal</option>
+                        <option style={{ backgroundColor: '#16A34A', color: 'white' }}>Low</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400">Owner</label>
+                  <select className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200" value={tOwner} onChange={(e) => setTOwner(e.target.value)}>
+                    <option value="">Unassigned</option>
+                    {(attendees ?? []).map((a) => {
+                      const email = String(a.email || "").trim();
+                      const fullName = a.full_name ? String(a.full_name) : null;
+            
+                      return (
+                        <option key={email} value={`email:${email.toLowerCase()}`}>
+                          {formatAttendeeLabel(fullName, email)}
+                        </option>
+                      );
+                    })}
+                  </select>
+                  {tOwner && (
+                    <div className="mt-1 flex items-center gap-2">
+                      <div 
+                        className="w-4 h-4 rounded border"
+                        style={{ backgroundColor: tOwner.startsWith("email:") ? attendeeColor(tOwner.slice(6)) : ownerColor(tOwner) }}
+                      />
+                      <span className="text-xs text-slate-500">Owner color</span>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400">Column</label>
+                  <select className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200" value={tColumnId} onChange={(e) => setTColumnId(e.target.value)}>
+                    {cols.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400">Start date</label>
+                  <Input type="date" value={tStart} onChange={(e) => setTStart(e.target.value)} />
+                </div>
+
+                <div>
+                  <label className="text-xs text-slate-400">Due date</label>
+                  <Input type="date" value={tDue} onChange={(e) => setTDue(e.target.value)} />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="text-xs text-slate-400">Notes</label>
+                  <Textarea rows={5} value={tNotes} onChange={(e) => setTNotes(e.target.value)} />
+                </div>
+
+                {editingTaskId && (
+                  <div className="md:col-span-2">
+                    <label className="text-xs text-slate-400">Add comment</label>
+                    <div className="grid gap-2">
+                      <Textarea rows={3} value={commentText} onChange={(e) => setCommentText(e.target.value)} placeholder="Type a comment..." />
+                      <div className="flex justify-end">
+                        <Button variant="ghost" onClick={addComment} disabled={busy || !commentText.trim()}>
+                          Comment
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+             {editingTaskId && (
+              <div>
+                <div className="text-sm font-semibold mb-2">Activity log</div>
+            
+                <div className="max-h-56 overflow-auto rounded-xl border bg-base">
+                  {tEvents.length === 0 ? (
+                    <div className="p-3 text-sm text-slate-400">No events yet.</div>
+                  ) : (
+                    <div className="divide-y">
+                      {tEvents.map((e) => (
+                        <div key={e.id} className="p-3 text-sm">
+                          <div className="flex items-center justify-between">
+                            <div className="font-medium">
+                              {e.event_type}{" "}
+                              <span className="text-xs text-slate-500 font-normal">
+                                by {profileName(e.created_by ?? null)}
+                              </span>
+                            </div>
+            
+                            <div className="text-xs text-slate-500">
+                              {prettyDate(e.created_at)}
+                            </div>
+                          </div>
+            
+                          {e.event_type === "comment" ? (
+                            <div className="mt-2 text-sm text-slate-200 whitespace-pre-wrap">
+                              {e.payload?.text ?? ""}
+                            </div>
+                          ) : (
+                            <div className="mt-2 text-sm text-slate-200">
+                              {e.event_type === "updated" && e.payload?.changes ? (
+                                <ul className="list-disc pl-5 space-y-1">
+                                  {Object.entries(e.payload.changes).map(([k, v]) => (
+                                    <li key={k}>
+                                      {formatTaskEventLine({
+                                        event: { ...e, event_type: "updated", payload: { changes: { [k]: v as { from?: unknown; to?: unknown } } } },
+                                        columns,
+                                      })}
+                                    </li>
+                                  ))}
+                                </ul>
+                              ) : (
+                                <div>{formatTaskEventLine({ event: e, columns })}</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+      </div>  {/* closes space-y-4 */}
+    </div>    {/* closes max-h-[70vh] wrapper */}
+  </Modal>
+
+{/* Agenda Editor */}
+<Modal
+  open={agendaOpen}
+  title="Edit agenda topics"
+  onClose={() => setAgendaOpen(false)}
+  footer={
+    <>
+      <Button variant="ghost" onClick={() => setAgendaOpen(false)}>
+        Close
+      </Button>
+    </>
+  }
+>
+
+            <div className="text-sm text-slate-400 mb-3">Edit agenda topic fields below. (Next: drag reorder + add/remove.)</div>
+
+            <div className="space-y-3">
+              {sortByPos(agenda).map((a) => (
+                <div key={a.id} className="rounded-xl border p-3">
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <div>
+                      <label className="text-xs text-slate-400">Code</label>
+                      <Input
+                        value={a.code ?? ""}
+                        onChange={async (e) => {
+                          const code = e.target.value;
+                          setAgenda((prev) => prev.map((x) => (x.id === a.id ? { ...x, code } : x)));
+                          await sb.from("meeting_agenda_items").update({ code }).eq("id", a.id);
+                        }}
+                      />
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="text-xs text-slate-400">Title</label>
+                      <Input
+                        value={a.title}
+                        onChange={async (e) => {
+                          const title = e.target.value;
+                          setAgenda((prev) => prev.map((x) => (x.id === a.id ? { ...x, title } : x)));
+                          await sb.from("meeting_agenda_items").update({ title }).eq("id", a.id);
+                        }}
+                      />
+                    </div>
+
+                    <div className="md:col-span-3">
+                      <label className="text-xs text-slate-400">Description</label>
+                      <Textarea
+                        rows={2}
+                        value={a.description ?? ""}
+                        onChange={async (e) => {
+                          const description = e.target.value;
+                          setAgenda((prev) => prev.map((x) => (x.id === a.id ? { ...x, description } : x)));
+                          await sb.from("meeting_agenda_items").update({ description }).eq("id", a.id);
+                        }}
+                      />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </Modal>
+
+          {/* Send meeting notes modal */}
+          <Modal
+            open={sendNotesOpen}
+            title="Send meeting notes"
+            onClose={() => setSendNotesOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setSendNotesOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="text-sm text-slate-400 mb-3">
+              Choose which meeting minutes session to email. (PDF must be generated first.)
+            </div>
+
+            <div className="space-y-2">
+              {prevSessions.length === 0 && !currentSession ? (
+                <div className="text-sm text-slate-400">No sessions found.</div>
+              ) : (
+                [
+                  ...(currentSession ? [currentSession] : []),
+                  ...prevSessions,
+                ].map((s) => (
+                  <div key={s.id} className="rounded-xl border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <div className="font-semibold">{prettyDate(s.started_at)}</div>
+                        <div className="text-xs text-slate-400">
+                          {s.ended_at ? `Ended ${prettyDate(s.ended_at)}` : "(In progress / not concluded)"}
+                        </div>
+                        {s.ai_status && s.ai_status !== "done" && (
+                          <div className="text-xs text-slate-400 mt-1">
+                            Status: {String(s.ai_status)}
+                            {s.ai_status === "error" && s.ai_error ? ` — ${String(s.ai_error)}` : ""}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="flex flex-col items-end gap-2">
+                        <Button
+                          variant="ghost"
+                          onClick={() => sendMeetingNotes(s.id)}
+                          disabled={!s.pdf_path}
+                        >
+                          Send
+                        </Button>
+                        <button
+                          type="button"
+                          className="text-xs underline underline-offset-2 hover:opacity-80"
+                          onClick={() => void openSessionPdf(s.id)}
+                          disabled={!s.pdf_path}
+                        >
+                          {s.pdf_path ? "View PDF" : s.ai_status === "error" ? "No PDF" : "Processing"}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </Modal>
+
+          {/* Previous meetings modal */}
+          <Modal
+            open={prevMeetingsOpen}
+            title="Previous meetings"
+            onClose={() => setPrevMeetingsOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setPrevMeetingsOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="space-y-2">
+              {prevSessions.length === 0 ? (
+                <div className="text-sm text-slate-400">No previous sessions found.</div>
+              ) : (
+                prevSessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className="w-full text-left rounded-xl border p-3 hover:bg-base"
+                  >
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="flex-1 text-left"
+                        onClick={() => selectPreviousSession(s.id)}
+                        type="button"
+                      >
+                        <div className="font-semibold">{prettyDate(s.started_at)}</div>
+                      </button>
+                      <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+                        <span className="text-xs text-slate-400">Session #</span>
+                        <input
+                          type="number"
+                          min={1}
+                          className="w-12 text-xs border rounded px-1 py-0.5 text-center"
+                          defaultValue={s.session_number ?? ""}
+                          placeholder="—"
+                          onBlur={(e) => {
+                            const val = parseInt(e.target.value, 10);
+                            if (val > 0) void updateSessionNumber(s.id, val);
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") (e.target as HTMLInputElement).blur();
+                          }}
+                        />
+                        <button
+                          type="button"
+                          className="text-xs text-slate-500 hover:text-red-400 transition-colors ml-1"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            void deleteSession(s.id);
+                          }}
+                          title="Delete session"
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                    <button
+                      className="w-full text-left"
+                      onClick={() => selectPreviousSession(s.id)}
+                      type="button"
+                    >
+                    <div className="text-xs text-slate-400">
+                      {s.ended_at ? `Ended ${prettyDate(s.ended_at)}` : "(In progress / not concluded)"}
+                    </div>
+                    {s.ai_status && s.ai_status !== "done" && (
+                      <div className="text-xs text-slate-400 mt-1">
+                        Status: {String(s.ai_status)}
+                        {s.ai_status === "error" && s.ai_error ? ` — ${String(s.ai_error)}` : ""}
+                      </div>
+                    )}
+                    <div className="text-xs text-slate-500 mt-1 flex items-center justify-between">
+                      <span />
+                      <button
+                        type="button"
+                        className="text-xs underline underline-offset-2 hover:opacity-80"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          void openSessionPdf(s.id);
+                        }}
+                        disabled={!s.pdf_path}
+                      >
+                        {s.pdf_path ? "Link" : s.ai_status === "error" ? "No PDF" : "Processing"}
+                      </button>
+                    </div>
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </Modal>
+
+          {/* Status manager modal */}
+          <Modal
+            open={statusMgrOpen}
+            title="Task Statuses"
+            onClose={() => setStatusMgrOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setStatusMgrOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="text-sm text-slate-400 mb-3">
+              This controls the list of Status values available for tasks in this meeting.
+            </div>
+
+            <div className="space-y-3">
+              {statusOpts.map((s) => (
+                <div key={s.id} className="flex items-center gap-2">
+                  <Input value={s.name} onChange={(e) => updateStatus(s.id, e.target.value)} />
+                  <input
+                    type="color"
+                    value={s.color_hex || "#6B7280"}
+                    onChange={(e) => updateStatusColor(s.id, e.target.value)}
+                    className="w-12 h-8 rounded border cursor-pointer"
+                    title="Status color"
+                  />
+                  <Button variant="ghost" onClick={() => deleteStatus(s.id)}>
+                    Delete
+                  </Button>
+                </div>
+              ))}
+
+              <AddStatusRow onAdd={addStatus} />
+            </div>
+          </Modal>
+
+          {/* Priority manager modal */}
+          <Modal
+            open={priorityMgrOpen}
+            title="Task Priorities"
+            onClose={() => setPriorityMgrOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setPriorityMgrOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="text-sm text-slate-400 mb-3">
+              This controls the list of Priority values available for tasks and milestones in this meeting.
+            </div>
+
+            <div className="space-y-3">
+              {priorityOpts.map((p) => (
+                <div key={p.id} className="flex items-center gap-2">
+                  <Input value={p.name} onChange={(e) => updatePriority(p.id, e.target.value)} />
+                  <input
+                    type="color"
+                    value={p.color_hex || "#6B7280"}
+                    onChange={(e) => updatePriorityColor(p.id, e.target.value)}
+                    className="w-12 h-8 rounded border cursor-pointer"
+                    title="Priority color"
+                  />
+                  <Button variant="ghost" onClick={() => deletePriority(p.id)}>
+                    Delete
+                  </Button>
+                </div>
+              ))}
+
+              <AddPriorityRow onAdd={addPriority} />
+            </div>
+          </Modal>
+
+          {/* Attendees manager modal */}
+          <Modal
+            open={attendeesMgrOpen}
+            title="Edit Attendees"
+            onClose={() => setAttendeesMgrOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setAttendeesMgrOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="text-sm text-slate-400 mb-3">
+              Manage the list of attendees for this meeting. These attendees are used in task/milestone owners and meeting notes recipients.
+            </div>
+
+            <div className="space-y-3">
+              {attendees.map((a) => (
+                <div key={a.email} className="flex items-center gap-2">
+                  <div className="flex-1 grid grid-cols-2 gap-2">
+                    <Input 
+                      value={a.full_name || ""} 
+                      onChange={(e) => updateAttendee(a.email, e.target.value, a.color_hex || "#6B7280")} 
+                      placeholder="Full name"
+                    />
+                    <Input 
+                      value={a.email} 
+                      disabled
+                      className="bg-base"
+                    />
+                  </div>
+                  <input
+                    type="color"
+                    value={a.color_hex || "#6B7280"}
+                    onChange={(e) => updateAttendee(a.email, a.full_name || "", e.target.value)}
+                    className="w-12 h-8 rounded border cursor-pointer"
+                    title="Attendee color"
+                  />
+                  <Button variant="ghost" onClick={() => deleteAttendee(a.email)}>
+                    Delete
+                  </Button>
+                </div>
+              ))}
+
+              <AddAttendeeRow onAdd={addAttendee} />
+            </div>
+          </Modal>
+
+          {/* Note Categories Manager modal */}
+          <Modal
+            open={noteCategoriesOpen}
+            title="Note Categories"
+            onClose={() => setNoteCategoriesOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setNoteCategoriesOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="text-sm text-slate-400 mb-3">
+              Manage predefined categories for notes. Categories from existing notes are automatically included.
+            </div>
+
+            <div className="space-y-3">
+              {availableNoteCategories.map((cat) => (
+                <div key={cat} className="flex items-center gap-2">
+                  <Input 
+                    value={cat} 
+                    onChange={(e) => updateNoteCategory(cat, e.target.value)}
+                    className="flex-1"
+                  />
+                  <Button variant="ghost" onClick={() => deleteNoteCategory(cat)}>
+                    Delete
+                  </Button>
+                </div>
+              ))}
+
+              <AddNoteCategoryRow onAdd={addNoteCategory} />
+            </div>
+          </Modal>
+
+          {/* Milestone Modal */}
+          <Modal
+            open={milestoneOpen}
+            title={editingMilestoneId ? "Edit Milestone" : "New Milestone"}
+            onClose={() => setMilestoneOpen(false)}
+            footer={
+              <>
+                {editingMilestoneId && (
+                  <Button variant="ghost" onClick={deleteMilestone} disabled={busy}>
+                    Delete
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => setMilestoneOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={saveMilestone} disabled={busy}>
+                  Save
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-slate-400">Title *</label>
+                <Input value={mTitle} onChange={(e) => setMTitle(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400">Description</label>
+                <Textarea rows={3} value={mDescription} onChange={(e) => setMDescription(e.target.value)} />
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400">Status</label>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                    value={mStatus}
+                    onChange={(e) => setMStatus(e.target.value)}
+                  >
+                    <option value="Pending">Pending</option>
+                    <option value="In Progress">In Progress</option>
+                    <option value="Completed">Completed</option>
+                    <option value="Delayed">Delayed</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400">Priority</label>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                    style={{ 
+                      backgroundColor: priorityColor(mPriority), 
+                      color: 'white',
+                      fontWeight: '500'
+                    }}
+                    value={mPriority}
+                    onChange={(e) => setMPriority(e.target.value)}
+                  >
+                    {priorityOpts.length ? (
+                      priorityOpts.map((p) => (
+                        <option 
+                          key={p.id} 
+                          value={p.name}
+                          style={{ 
+                            backgroundColor: p.color_hex || priorityColor(p.name),
+                            color: 'white'
+                          }}
+                        >
+                          {p.name}
+                        </option>
+                      ))
+                    ) : (
+                      <>
+                        <option value="Urgent" style={{ backgroundColor: '#DC2626', color: 'white' }}>Urgent</option>
+                        <option value="High" style={{ backgroundColor: '#EA580C', color: 'white' }}>High</option>
+                        <option value="Normal" style={{ backgroundColor: '#2563EB', color: 'white' }}>Normal</option>
+                        <option value="Low" style={{ backgroundColor: '#16A34A', color: 'white' }}>Low</option>
+                      </>
+                    )}
+                  </select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs text-slate-400">Owner</label>
+                  <select
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                    value={mOwner}
+                    onChange={(e) => setMOwner(e.target.value)}
+                  >
+                    <option value="">(None)</option>
+                    <optgroup label="Registered Users">
+                      {profiles.map((p) => (
+                        <option key={p.id} value={p.id}>
+                          {p.full_name || p.email || p.id}
+                        </option>
+                      ))}
+                    </optgroup>
+                    <optgroup label="Attendees (email)">
+                      {attendees
+                        .filter((a) => !a.user_id)
+                        .map((a) => (
+                          <option key={a.email} value={`email:${a.email.toLowerCase()}`}>
+                            {a.full_name || a.email}
+                          </option>
+                        ))}
+                    </optgroup>
+                  </select>
+                  {mOwner && (
+                    <div className="mt-1 flex items-center gap-2">
+                      <div 
+                        className="w-4 h-4 rounded border"
+                        style={{ backgroundColor: mOwner.startsWith("email:") ? attendeeColor(mOwner.slice(6)) : ownerColor(mOwner) }}
+                      />
+                      <span className="text-xs text-slate-500">Owner color</span>
+                    </div>
+                  )}
+                </div>
+                <div>
+                  <label className="text-xs text-slate-400">Target Date</label>
+                  <Input type="date" value={mTargetDate} onChange={(e) => setMTargetDate(e.target.value)} />
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          {/* Ongoing Note Modal */}
+          <Modal
+            open={noteOpen}
+            title={editingNoteId ? "Edit Note" : "New Note"}
+            onClose={() => setNoteOpen(false)}
+            footer={
+              <>
+                {editingNoteId && (
+                  <Button variant="ghost" onClick={deleteNote} disabled={busy}>
+                    Delete
+                  </Button>
+                )}
+                <Button variant="ghost" onClick={() => setNoteOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={saveNote} disabled={busy}>
+                  Save
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-slate-400">Title *</label>
+                <Input value={nTitle} onChange={(e) => setNTitle(e.target.value)} />
+              </div>
+              <div>
+                <label className="text-xs text-slate-400">Category (optional)</label>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                  value={nCategory}
+                  onChange={(e) => setNCategory(e.target.value)}
+                >
+                  <option value="">None</option>
+                  {availableNoteCategories.map((cat) => (
+                    <option key={cat} value={cat}>
+                      {cat}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="text-xs text-slate-400">Content</label>
+                <Textarea rows={8} value={nContent} onChange={(e) => setNContent(e.target.value)} />
+              </div>
+            </div>
+          </Modal>
+
+          {/* Email settings modal */}
+          <Modal
+            open={emailSettingsOpen}
+            title="Email reminders"
+            onClose={() => setEmailSettingsOpen(false)}
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setEmailSettingsOpen(false)}>
+                  Cancel
+                </Button>
+                <Button onClick={saveReminderSettings} disabled={busy}>
+                  Save
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-3">
+              <div className="text-sm text-slate-400">
+                Choose how often the system should email reminders to attendees. If a minutes PDF exists for the latest concluded session, the email can include the PDF link.
+                (This requires Vercel Cron + SMTP, and the Supabase migration included below.)
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400">Reminder frequency</label>
+                <select
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                  value={reminderFreq}
+                  onChange={(e) => setReminderFreq(e.target.value as "none" | "daily" | "weekdays" | "weekly" | "biweekly" | "monthly")}
+                >
+                  <option value="none">None</option>
+                  <option value="daily">Daily</option>
+                  <option value="weekdays">Weekdays (Mon–Fri)</option>
+                  <option value="weekly">Weekly</option>
+                  <option value="biweekly">Every 2 weeks</option>
+                  <option value="monthly">Monthly</option>
+                </select>
+              </div>
+            </div>
+          </Modal>
+
+          {/* Recording controls modal */}
+          <Modal
+            open={recOpen}
+            title="Meeting recording"
+            onClose={() => setRecOpen(false)}
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setRecOpen(false)}>
+                  Close
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm text-slate-300">
+                  {currentSession ? (
+                    <>
+                      Session started: <span className="font-semibold">{prettyDate(currentSession.started_at)}</span>
+                      {currentSession.ended_at ? (
+                        <span className="ml-2 text-xs text-slate-500">(Ended)</span>
+                      ) : null}
+                    </>
+                  ) : (
+                    "No active minutes session."
+                  )}
+                </div>
+
+                <Button variant="ghost" onClick={() => setRecMin((v) => !v)}>
+                  {recMin ? "Expand" : "Collapse"}
+                </Button>
+              </div>
+
+              {recMin ? (
+                <div className="text-sm text-slate-400">Collapsed. Expand to start/stop recording.</div>
+              ) : (
+                <div className="space-y-3">
+                  <div className="rounded-xl border p-3 bg-base">
+                    <div className="text-sm">Duration: {Math.floor(recSeconds / 60)}m {recSeconds % 60}s</div>
+                    <div className="text-xs text-slate-500">Auto-stops at 2 hours.</div>
+                  </div>
+
+                  <div className="flex gap-2">
+                    {!isRecording ? (
+                      <Button
+                        onClick={() => {
+                          if (!currentSession) return;
+                          void globalStartRecording({ meetingId, sessionId: currentSession.id, meetingTitle: meeting?.title ?? "Meeting" });
+                        }}
+                        disabled={!currentSession || !!currentSession.ended_at || recBusy}
+                      >
+                        Start recording
+                      </Button>
+                    ) : (
+                      <Button onClick={() => void globalStopAndUpload()} disabled={recBusy}>
+                        {recBusy ? "Uploading..." : "Stop + Upload"}
+                      </Button>
+                    )}
+                  </div>
+
+                  {recErr && <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-2">{recErr}</div>}
+                </div>
+              )}
+            </div>
+          </Modal>
+
+          {/* Start Meeting Checklist Modal */}
+          <Modal
+            open={startMeetingOpen}
+            title={`${meeting?.title ?? "Meeting"} — Session #${nextSessionNumber}`}
+            onClose={() => setStartMeetingOpen(false)}
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setStartMeetingOpen(false)}>Cancel</Button>
+                <Button onClick={async () => {
+                  setBusy(true);
+                  setErr(null);
+                  try {
+                    const session = await ensureCurrentSession();
+                    const sessionTitle = `${meeting?.title ?? "Meeting"} #${nextSessionNumber}`;
+
+                    // Save attendance data for this session
+                    const attendanceRows = [
+                      ...attendees.map(a => ({
+                        session_id: session.id,
+                        email: a.email,
+                        full_name: a.full_name || null,
+                        is_present: !!attendeePresence[a.email],
+                        is_guest: false,
+                      })),
+                      ...guestNames.map(name => ({
+                        session_id: session.id,
+                        email: null,
+                        full_name: name,
+                        is_present: true,
+                        is_guest: true,
+                      })),
+                    ];
+                    if (attendanceRows.length) {
+                      await sb.from("meeting_session_attendees").insert(attendanceRows);
+                    }
+
+                    stopAudioPreview();
+
+                    await globalStartRecording({
+                      meetingId,
+                      sessionId: session.id,
+                      meetingTitle: sessionTitle,
+                      audioDeviceId: selectedMicId || undefined,
+                      includeSystemAudio,
+                    });
+                    setStartMeetingOpen(false);
+                  } catch (e: unknown) {
+                    setErr((e as Error)?.message ?? "Failed to start meeting");
+                  } finally {
+                    setBusy(false);
+                  }
+                }} disabled={busy}>
+                  {busy ? "Starting..." : "Start Meeting & Record"}
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-5">
+              {/* Date/Time */}
+              <div>
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Date &amp; Time</div>
+                <div className="text-sm text-slate-300">
+                  {meeting?.start_at ? prettyDate(meeting.start_at) : "—"} · Starting now: {new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                </div>
+              </div>
+
+              {/* Audio Setup */}
+              <div>
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                  Audio Setup
+                </div>
+
+                {audioDevices.length === 0 ? (
+                  <div className="text-sm text-slate-400">Loading audio devices...</div>
+                ) : (
+                  <div className="space-y-3">
+                    {/* Mic selector */}
+                    <div>
+                      <label className="text-xs text-slate-400 mb-1 block">Microphone</label>
+                      <select
+                        className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200"
+                        value={selectedMicId}
+                        onChange={(e) => setSelectedMicId(e.target.value)}
+                      >
+                        {audioDevices.map((d, i) => (
+                          <option key={d.deviceId} value={d.deviceId}>
+                            {d.label || `Microphone ${i + 1}`}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Audio level meter */}
+                    <div>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs text-slate-400">Level</span>
+                        <span className={`w-2 h-2 rounded-full ${audioLevel > 0.05 ? 'bg-emerald-400 animate-pulse' : 'bg-slate-600'}`} />
+                        {audioLevel > 0.05 && <span className="text-xs text-emerald-400">Receiving audio</span>}
+                      </div>
+                      <div className="w-full h-2 bg-base rounded-full overflow-hidden">
+                        <div
+                          className="h-full rounded-full transition-all duration-75"
+                          style={{
+                            width: `${Math.min(100, audioLevel * 100 * 2)}%`,
+                            background: audioLevel > 0.7 ? '#ef4444' : audioLevel > 0.4 ? '#f59e0b' : '#10b981',
+                          }}
+                        />
+                      </div>
+                      <div className="text-xs text-slate-500 mt-1">
+                        Speak to test your microphone. The bar should move when you talk.
+                      </div>
+                    </div>
+
+                    {/* System audio toggle for virtual meetings */}
+                    {systemAudioSupported && (
+                      <div className="mt-3 p-3 rounded-lg border border-white/10 bg-white/[0.02]">
+                        <label className="flex items-center gap-3 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={includeSystemAudio}
+                            onChange={(e) => setIncludeSystemAudio(e.target.checked)}
+                            className="rounded"
+                          />
+                          <div>
+                            <div className="text-sm text-slate-200">
+                              Capture system audio (for virtual meetings)
+                            </div>
+                            <div className="text-xs text-slate-500 mt-0.5">
+                              Enable this if you&apos;re on Google Meet, Zoom, or Teams to capture
+                              other participants&apos; audio through your speakers. Chrome will ask
+                              you to select which tab or screen to share.
+                            </div>
+                          </div>
+                        </label>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Attendees */}
+              <div>
+                <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
+                  Attendees ({Object.values(attendeePresence).filter(Boolean).length + guestNames.length} present)
+                </div>
+                <div className="space-y-1 max-h-44 overflow-y-auto">
+                  {attendees.map(a => (
+                    <label key={a.email} className="flex items-center gap-2 text-sm cursor-pointer hover:bg-white/[0.04] rounded px-2 py-1.5 transition-colors">
+                      <input
+                        type="checkbox"
+                        checked={!!attendeePresence[a.email]}
+                        onChange={() => setAttendeePresence(prev => ({ ...prev, [a.email]: !prev[a.email] }))}
+                        className="rounded"
+                      />
+                      <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: a.color_hex || '#6b7280' }} />
+                      <span className={attendeePresence[a.email] ? 'text-slate-200' : 'text-slate-500 line-through'}>
+                        {a.full_name || a.email}
+                      </span>
+                      {!attendeePresence[a.email] && <span className="text-xs text-slate-600 ml-auto">absent</span>}
+                    </label>
+                  ))}
+
+                  {/* Guest names */}
+                  {guestNames.map((name, i) => (
+                    <div key={`guest-${i}`} className="flex items-center gap-2 text-sm px-2 py-1.5">
+                      <input type="checkbox" checked disabled className="rounded" />
+                      <span className="w-2 h-2 rounded-full bg-slate-500 flex-shrink-0" />
+                      <span className="text-slate-200">{name}</span>
+                      <span className="text-xs text-emerald-500 ml-1">guest</span>
+                      <button
+                        className="ml-auto text-xs text-slate-500 hover:text-red-400 transition-colors"
+                        onClick={() => setGuestNames(prev => prev.filter((_, gi) => gi !== i))}
+                      >✕</button>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Add guest */}
+                <div className="flex gap-2 mt-2">
+                  <Input
+                    value={guestInput}
+                    onChange={(e) => setGuestInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && guestInput.trim()) {
+                        setGuestNames(prev => [...prev, guestInput.trim()]);
+                        setGuestInput("");
+                      }
+                    }}
+                    placeholder="Add guest name..."
+                  />
+                  <Button variant="ghost" onClick={() => {
+                    if (guestInput.trim()) {
+                      setGuestNames(prev => [...prev, guestInput.trim()]);
+                      setGuestInput("");
+                    }
+                  }}>
+                    + Add
+                  </Button>
+                </div>
+              </div>
+
+              {/* Agenda preview */}
+              {agenda.length > 0 && (
+                <div>
+                  <div className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Agenda</div>
+                  <div className="space-y-1 text-sm">
+                    {agenda.map(a => (
+                      <div key={a.id} className="text-slate-400 px-2 py-0.5 flex gap-2">
+                        {a.code && <span className="text-slate-600 font-mono text-xs">{a.code}</span>}
+                        <span>{a.title}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          </Modal>
+
+          {/* Column Manager Modal */}
+          <Modal
+            open={columnManagerOpen}
+            title="Manage Task Board Columns"
+            onClose={() => setColumnManagerOpen(false)}
+            footer={
+              <Button variant="ghost" onClick={() => setColumnManagerOpen(false)}>
+                Close
+              </Button>
+            }
+          >
+            <div className="space-y-4">
+              <div>
+                <label className="text-xs text-slate-400">Add New Column</label>
+                <div className="flex gap-2">
+                  <Input
+                    value={newColumnName}
+                    onChange={(e) => setNewColumnName(e.target.value)}
+                    placeholder="Column name"
+                    onKeyPress={(e) => {
+                      if (e.key === "Enter") void addColumn();
+                    }}
+                  />
+                  <Button onClick={addColumn} disabled={busy}>
+                    Add
+                  </Button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-xs text-slate-400 mb-2 block">Existing Columns</label>
+                <div className="space-y-2">
+                  {sortByPos(columns).map((col, index) => (
+                    <div key={col.id} className="flex items-center gap-2 p-2 bg-base rounded-lg">
+                      <div className="flex gap-1">
+                        <button
+                          type="button"
+                          className="p-1 hover:bg-white/[0.08] rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          onClick={() => moveColumn(col.id, "left")}
+                          disabled={index === 0 || busy}
+                          title="Move left"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="p-1 hover:bg-white/[0.08] rounded disabled:opacity-30 disabled:cursor-not-allowed"
+                          onClick={() => moveColumn(col.id, "right")}
+                          disabled={index === columns.length - 1 || busy}
+                          title="Move right"
+                        >
+                          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </button>
+                      </div>
+                      <div className="flex-1 font-medium">{col.name}</div>
+                      <div className="text-xs text-slate-500">
+                        {tasks.filter((t) => t.column_id === col.id).length} tasks
+                      </div>
+                      <Button
+                        variant="ghost"
+                        onClick={() => deleteColumn(col.id)}
+                        disabled={busy}
+                      >
+                        Delete
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {err && (
+                <div className="text-sm text-red-400 bg-red-500/10 border border-red-500/20 rounded-lg p-2">{err}</div>
+              )}
+            </div>
+          </Modal>
+        </div>
+      )}
+    </PageShell>
+  );
+}
+
+// Calendar View Component
+function CalendarView({
+  tasks,
+  milestones,
+  month,
+  year,
+  onMonthChange,
+  onYearChange,
+  onTaskClick,
+  onMilestoneClick,
+  statusColor,
+  priorityColor,
+  getOwnerColor,
+}: {
+  tasks: Task[];
+  milestones: Milestone[];
+  month: number;
+  year: number;
+  onMonthChange: (month: number) => void;
+  onYearChange: (year: number) => void;
+  onTaskClick: (taskId: string) => void;
+  onMilestoneClick: (milestoneId: string) => void;
+  statusColor: (status: string) => string;
+  priorityColor: (priority: string) => string;
+  getOwnerColor: (item: { owner_id?: string | null; owner_email?: string | null }) => string;
+}) {
+  const MAX_BARS_PER_WEEK = 3;
+  const [expandedWeeks, setExpandedWeeks] = useState<Set<number>>(new Set());
+  const days = getMonthDays(year, month);
+  const monthName = new Date(year, month, 1).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+
+  // Split days into week rows
+  const weeks: Date[][] = [];
+  for (let i = 0; i < days.length; i += 7) {
+    weeks.push(days.slice(i, i + 7));
+  }
+
+  // Compute bar lanes for a given week
+  type WeekBar = {
+    type: 'task' | 'milestone';
+    task?: Task;
+    milestone?: Milestone;
+    startCol: number;
+    endCol: number;
+    showLabel: boolean;
+    isStart: boolean;
+    isEnd: boolean;
+  };
+
+  function computeWeekLanes(week: Date[]): WeekBar[][] {
+    const weekStartKey = formatDateKey(week[0]);
+    const weekEndKey = formatDateKey(week[6]);
+    const weekKeys = week.map(formatDateKey);
+
+    const allBars: WeekBar[] = [];
+
+    // Process tasks
+    tasks.forEach((task) => {
+      const effectiveStart = task.start_date || task.due_date;
+      const effectiveEnd = task.due_date || task.start_date;
+      if (!effectiveStart && !effectiveEnd) return;
+
+      const startKey = effectiveStart!;
+      const endKey = effectiveEnd!;
+
+      // Skip if task does not overlap this week
+      if (endKey < weekStartKey || startKey > weekEndKey) return;
+
+      const startCol = startKey <= weekStartKey ? 0 : weekKeys.indexOf(startKey);
+      const endCol = endKey >= weekEndKey ? 6 : weekKeys.indexOf(endKey);
+      if (startCol < 0 || endCol < 0 || startCol > endCol) return;
+
+      const isStart = startKey >= weekStartKey;
+      const isEnd = endKey <= weekEndKey;
+
+      allBars.push({
+        type: 'task',
+        task,
+        startCol,
+        endCol,
+        showLabel: isStart || startCol === 0,
+        isStart,
+        isEnd,
+      });
+    });
+
+    // Process milestones (single-day)
+    milestones.forEach((milestone) => {
+      if (!milestone.target_date) return;
+      if (milestone.target_date < weekStartKey || milestone.target_date > weekEndKey) return;
+      const col = weekKeys.indexOf(milestone.target_date);
+      if (col < 0) return;
+
+      allBars.push({
+        type: 'milestone',
+        milestone,
+        startCol: col,
+        endCol: col,
+        showLabel: true,
+        isStart: true,
+        isEnd: true,
+      });
+    });
+
+    // Sort: longer bars first, then by start column
+    allBars.sort((a, b) => {
+      const spanA = a.endCol - a.startCol;
+      const spanB = b.endCol - b.startCol;
+      if (spanB !== spanA) return spanB - spanA;
+      return a.startCol - b.startCol;
+    });
+
+    // Greedy lane assignment
+    const lanes: WeekBar[][] = [];
+    allBars.forEach((bar) => {
+      let placed = false;
+      for (let i = 0; i < lanes.length; i++) {
+        const hasOverlap = lanes[i].some(
+          (existing) => !(bar.endCol < existing.startCol || bar.startCol > existing.endCol)
+        );
+        if (!hasOverlap) {
+          lanes[i].push(bar);
+          placed = true;
+          break;
+        }
+      }
+      if (!placed) {
+        lanes.push([bar]);
+      }
+    });
+
+    return lanes;
+  }
+
+  const goToPrevMonth = () => {
+    if (month === 0) {
+      onMonthChange(11);
+      onYearChange(year - 1);
+    } else {
+      onMonthChange(month - 1);
+    }
+  };
+
+  const goToNextMonth = () => {
+    if (month === 11) {
+      onMonthChange(0);
+      onYearChange(year + 1);
+    } else {
+      onMonthChange(month + 1);
+    }
+  };
+
+  const goToToday = () => {
+    const today = new Date();
+    onMonthChange(today.getMonth());
+    onYearChange(today.getFullYear());
+  };
+
+  const isCurrentMonth = (date: Date) => date.getMonth() === month;
+  const isToday = (date: Date) => isSameDay(date, new Date());
+
+  const toggleWeekExpanded = (weekIdx: number) => {
+    setExpandedWeeks((prev) => {
+      const next = new Set(prev);
+      if (next.has(weekIdx)) {
+        next.delete(weekIdx);
+      } else {
+        next.add(weekIdx);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className="space-y-3">
+      {/* Calendar Header */}
+      <div className="flex items-center justify-between">
+        <div className="text-lg font-semibold">{monthName}</div>
+        <div className="flex gap-2">
+          <Button variant="ghost" onClick={goToToday}>
+            Today
+          </Button>
+          <Button variant="ghost" onClick={goToPrevMonth}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+            </svg>
+          </Button>
+          <Button variant="ghost" onClick={goToNextMonth}>
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </Button>
+        </div>
+      </div>
+
+      {/* Day headers */}
+      <div className="grid grid-cols-7">
+        {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((day) => (
+          <div key={day} className="text-center text-xs font-semibold text-slate-400 py-2">
+            {day}
+          </div>
+        ))}
+      </div>
+
+      {/* Week rows with bars */}
+      {weeks.map((week, weekIdx) => {
+        const lanes = computeWeekLanes(week);
+        const isExpanded = expandedWeeks.has(weekIdx);
+        const visibleLanes = isExpanded ? lanes : lanes.slice(0, MAX_BARS_PER_WEEK);
+        const hiddenCount = lanes.length - MAX_BARS_PER_WEEK;
+
+        return (
+          <div key={weekIdx}>
+            {/* Date number row */}
+            <div className="grid grid-cols-7">
+              {week.map((date, colIdx) => {
+                const isCurrent = isCurrentMonth(date);
+                const isNow = isToday(date);
+                return (
+                  <div
+                    key={colIdx}
+                    className={`text-center text-xs font-semibold py-1 border-b border-white/5 ${
+                      isCurrent ? 'bg-surface' : 'bg-base'
+                    }`}
+                  >
+                    <span className={`inline-flex items-center justify-center w-6 h-6 rounded-full ${
+                      isNow ? 'ring-2 ring-emerald-500 text-emerald-400' : isCurrent ? 'text-slate-100' : 'text-slate-600'
+                    }`}>
+                      {date.getDate()}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Bar lanes */}
+            <div className="relative" style={{ minHeight: visibleLanes.length ? `${visibleLanes.length * 26 + 4}px` : '8px' }}>
+              {visibleLanes.map((lane, laneIdx) =>
+                lane.map((bar) => {
+                  const leftPct = (bar.startCol / 7) * 100;
+                  const widthPct = ((bar.endCol - bar.startCol + 1) / 7) * 100;
+                  const topPx = laneIdx * 26 + 2;
+
+                  if (bar.type === 'milestone' && bar.milestone) {
+                    return (
+                      <div
+                        key={`m-${bar.milestone.id}`}
+                        className="absolute cursor-pointer hover:opacity-80 text-xs truncate px-1 py-0.5 rounded"
+                        style={{
+                          left: `${leftPct}%`,
+                          width: `${widthPct}%`,
+                          top: `${topPx}px`,
+                          height: '22px',
+                          backgroundColor: `${priorityColor(bar.milestone.priority)}20`,
+                          borderLeft: `2px solid ${priorityColor(bar.milestone.priority)}`,
+                        }}
+                        title={bar.milestone.title}
+                        onClick={() => onMilestoneClick(bar.milestone!.id)}
+                      >
+                        🎯 {bar.milestone.title}
+                      </div>
+                    );
+                  }
+
+                  if (bar.type === 'task' && bar.task) {
+                    const ownerClr = getOwnerColor(bar.task);
+                    const completed = bar.task.status?.toLowerCase() === 'done' || bar.task.status?.toLowerCase() === 'completed';
+                    return (
+                      <div
+                        key={`t-${bar.task.id}`}
+                        className={`absolute cursor-pointer hover:opacity-80 text-xs truncate px-1 py-0.5 ${
+                          completed ? 'opacity-50 line-through' : ''
+                        }`}
+                        style={{
+                          left: `${leftPct}%`,
+                          width: `${widthPct}%`,
+                          top: `${topPx}px`,
+                          height: '22px',
+                          backgroundColor: `${ownerClr}25`,
+                          borderLeft: bar.isStart ? `3px solid ${ownerClr}` : undefined,
+                          borderRight: bar.isEnd ? `3px solid ${ownerClr}` : undefined,
+                          borderTop: `1px solid ${ownerClr}40`,
+                          borderBottom: `1px solid ${ownerClr}40`,
+                          borderRadius: `${bar.isStart ? 4 : 0}px ${bar.isEnd ? 4 : 0}px ${bar.isEnd ? 4 : 0}px ${bar.isStart ? 4 : 0}px`,
+                        }}
+                        title={bar.task.title}
+                        onClick={() => onTaskClick(bar.task!.id)}
+                      >
+                        {bar.showLabel ? bar.task.title : ''}
+                      </div>
+                    );
+                  }
+
+                  return null;
+                })
+              )}
+            </div>
+
+            {/* Show more / less */}
+            {hiddenCount > 0 && !isExpanded && (
+              <div
+                className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer pl-1 py-0.5 transition-colors"
+                onClick={() => toggleWeekExpanded(weekIdx)}
+              >
+                + {hiddenCount} more
+              </div>
+            )}
+            {isExpanded && lanes.length > MAX_BARS_PER_WEEK && (
+              <div
+                className="text-xs text-slate-500 hover:text-slate-300 cursor-pointer pl-1 py-0.5 transition-colors"
+                onClick={() => toggleWeekExpanded(weekIdx)}
+              >
+                show less
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function AddStatusRow({ onAdd }: { onAdd: (name: string) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="flex items-center gap-2">
+      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Add a new status..." />
+      <Button
+        variant="ghost"
+        onClick={() => {
+          const v = name.trim();
+          if (!v) return;
+          onAdd(v);
+          setName("");
+        }}
+      >
+        Add
+      </Button>
+    </div>
+  );
+}
+
+function AddPriorityRow({ onAdd }: { onAdd: (name: string) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="flex items-center gap-2">
+      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Add a new priority..." />
+      <Button
+        variant="ghost"
+        onClick={() => {
+          const v = name.trim();
+          if (!v) return;
+          onAdd(v);
+          setName("");
+        }}
+      >
+        Add
+      </Button>
+    </div>
+  );
+}
+
+function AddAttendeeRow({ onAdd }: { onAdd: (email: string, fullName: string, color: string) => void }) {
+  const [email, setEmail] = useState("");
+  const [fullName, setFullName] = useState("");
+  const [color, setColor] = useState("#6B7280");
+  return (
+    <div className="space-y-2 border-t pt-3">
+      <div className="text-sm font-medium">Add New Attendee</div>
+      <div className="flex items-center gap-2">
+        <div className="flex-1 grid grid-cols-2 gap-2">
+          <Input value={fullName} onChange={(e) => setFullName(e.target.value)} placeholder="Full name" />
+          <Input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="Email *" />
+        </div>
+        <input
+          type="color"
+          value={color}
+          onChange={(e) => setColor(e.target.value)}
+          className="w-12 h-8 rounded border cursor-pointer"
+          title="Attendee color"
+        />
+        <Button
+          variant="ghost"
+          onClick={() => {
+            const e = email.trim();
+            if (!e) return;
+            onAdd(e, fullName.trim(), color);
+            setEmail("");
+            setFullName("");
+            setColor("#6B7280");
+          }}
+        >
+          Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function AddNoteCategoryRow({ onAdd }: { onAdd: (name: string) => void }) {
+  const [name, setName] = useState("");
+  return (
+    <div className="flex items-center gap-2 border-t pt-3">
+      <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Add a new category..." className="flex-1" />
+      <Button
+        variant="ghost"
+        onClick={() => {
+          const v = name.trim();
+          if (!v) return;
+          onAdd(v);
+          setName("");
+        }}
+      >
+        Add
+      </Button>
+    </div>
+  );
+}

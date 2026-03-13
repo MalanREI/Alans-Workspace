@@ -6,6 +6,9 @@ import { RecordingProvider } from "@/src/context/RecordingContext";
 export const metadata: Metadata = {
   title: APP_NAME,
   description: "Internal admin panel",
+  icons: {
+    icon: "/favicon.png",
+  },
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

@@ -1,4 +1,4 @@
-export const APP_NAME = "Alan's Workspace";
+export const APP_NAME = "Renewable Energy Incentives";
 
 export type NavChild = { label: string; href: string };
 

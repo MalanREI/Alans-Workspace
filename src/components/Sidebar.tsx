@@ -4,7 +4,7 @@ import Link from "next/link";
 import type { Route } from "next";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
-import { NAV_ITEMS, APP_NAME } from "@/src/config/app.config";
+import { NAV_ITEMS } from "@/src/config/app.config";
 import { Button } from "@/src/components/ui";
 
 export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle: () => void }) {
@@ -22,14 +22,13 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
   }
 
   return (
-    <aside className={["h-screen border-r border-white/[0.06] bg-surface p-4 flex flex-col", collapsed ? "w-16" : "w-64"].join(" ")}>
+    <aside className={["sticky top-0 h-screen border-r border-white/[0.06] bg-surface p-4 flex flex-col", collapsed ? "w-16" : "w-64"].join(" ")}>
       <div className="mb-6">
         <div className="flex items-center justify-between gap-2">
           {!collapsed && (
-            <div>
-              <div className="text-lg font-semibold text-slate-100">{APP_NAME}</div>
-              <div className="text-xs text-slate-500">REI Ops</div>
-            </div>
+            <a href="https://renewableenergyincentives.com" target="_blank" rel="noopener noreferrer">
+              <img src="/logo.png" alt="Renewable Energy Incentives" className="h-14 w-auto" />
+            </a>
           )}
           <Button variant="ghost" onClick={onToggle} aria-label="Toggle sidebar">
             {collapsed ? "→" : "←"}

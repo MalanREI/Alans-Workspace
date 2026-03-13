@@ -96,6 +96,8 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const segmentTimerRef = useRef<number | null>(null);
   const lastUploadedPathRef = useRef<string | null>(null);
   const isRotatingRef = useRef(false);
+  /** Tracks the currently in-flight rotation so stopRecordingAndUpload can await it. */
+  const rotationPromiseRef = useRef<Promise<void> | null>(null);
   /** Minimum allowed segment length to avoid excessively small uploads. */
   const MIN_SEGMENT_SECONDS = 60;
 
@@ -237,6 +239,15 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
       if (segmentTimerRef.current) {
         window.clearInterval(segmentTimerRef.current);
         segmentTimerRef.current = null;
+      }
+
+      // Wait for any in-flight segment rotation to finish before we drain
+      // chunksRef. Without this, a rotation that fired just before stop()
+      // will have already emptied chunksRef while its upload is still pending,
+      // causing the final blob to be empty and conclude() to find 0 recordings.
+      if (rotationPromiseRef.current) {
+        await rotationPromiseRef.current.catch(() => {});
+        rotationPromiseRef.current = null;
       }
 
       // Wait for the "stop" event so the last chunk flushes before building the blob.
@@ -404,7 +415,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         // Segment rotation on a separate timer — does NOT touch
         // isRecording / recSeconds / tick, so the UI stays stable.
         segmentTimerRef.current = window.setInterval(() => {
-          void rotateSegment();
+          rotationPromiseRef.current = rotateSegment();
         }, segmentSeconds * 1000);
       } catch (e: unknown) {
         const error = e as Error;

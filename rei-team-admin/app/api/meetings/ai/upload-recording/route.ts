@@ -3,10 +3,10 @@ import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
 /**
  * Max upload size (bytes)
- * Default: 4MB
- * Can be overridden with env var
+ * Default: 25MB (OpenAI Whisper's limit). Override with MAX_RECORDING_UPLOAD_BYTES.
+ * The old 4MB default was too low for 4-minute segments at typical browser bitrates.
  */
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_RECORDING_UPLOAD_BYTES || 4_000_000);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_RECORDING_UPLOAD_BYTES || 26_214_400);
 
 export async function POST(req: NextRequest) {
   try {

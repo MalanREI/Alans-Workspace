@@ -27,7 +27,11 @@ export async function middleware(req: NextRequest) {
   const { data } = await supabase.auth.getUser();
   const pathname = req.nextUrl.pathname;
 
-  const isPublic = PUBLIC_PATHS.includes(pathname) || pathname.startsWith("/_next") || pathname.startsWith("/favicon");
+  const isPublic =
+    PUBLIC_PATHS.includes(pathname) ||
+    pathname.startsWith("/_next") ||
+    pathname.startsWith("/favicon") ||
+    pathname.startsWith("/site-reports/public");
   if (isPublic) return res;
 
   if (!data?.user) {

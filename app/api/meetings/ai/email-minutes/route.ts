@@ -127,7 +127,7 @@ export async function POST(req: Request) {
           </div>
 
           <div style="color:#6b7280; font-size:12px; margin-top:14px;">
-            Sent by REI Admin Panel.
+            Sent by Alan's Workspace.
           </div>
         </div>
       </div>

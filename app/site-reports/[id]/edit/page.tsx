@@ -4,7 +4,7 @@ import { useEffect, useState, use } from "react";
 import Link from "next/link";
 import { PageShell } from "@/src/components/PageShell";
 import { Button } from "@/src/components/ui";
-import { ReportForm } from "@/app/site-reports/new/page";
+import { ReportForm } from "@/app/site-reports/_components/ReportForm";
 import type { FullReport, MilestoneFormEntry, ItemFormEntry } from "@/src/lib/types/site-reports";
 
 export const dynamic = "force-dynamic";

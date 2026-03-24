@@ -725,7 +725,7 @@ function DataSection() {
       </Card>
 
       <Card title="Session Management">
-        <p className="text-xs text-slate-500 mb-4">Active sessions on your account. Sign out sessions you don't recognise.</p>
+        <p className="text-xs text-slate-500 mb-4">Active sessions on your account. Sign out sessions you don&apos;t recognise.</p>
         {MOCK_SESSIONS.map((s) => (
           <div key={s.id} className="flex items-center justify-between gap-3 py-3 border-b border-white/[0.06] last:border-0">
             <div>
@@ -812,7 +812,7 @@ function AboutSection() {
       <div className="space-y-4 text-sm">
         <div className="flex items-center justify-between py-2 border-b border-white/[0.06]">
           <span className="text-slate-400">App</span>
-          <span className="text-slate-200 font-medium">Alan's Workspace</span>
+          <span className="text-slate-200 font-medium">Alan&apos;s Workspace</span>
         </div>
         <div className="flex items-center justify-between py-2 border-b border-white/[0.06]">
           <span className="text-slate-400">Version</span>

@@ -99,7 +99,7 @@ type TabValue = (typeof TABS)[number]["value"];
 function ProfileSection({ email }: { email: string }) {
   const [displayName, setDisplayName] = useState("Alan Moore");
   const [role, setRole] = useState("Team Lead");
-  const [company, setCompany] = useState("REI Team");
+  const [company, setCompany] = useState("Alan's Workspace");
   const [saved, setSaved] = useState(false);
 
   // TODO: Supabase table needed: profiles (id uuid FK auth.users, display_name text, role text, company text, avatar_url text)
@@ -144,7 +144,7 @@ function ProfileSection({ email }: { email: string }) {
             <Input value={role} onChange={(e) => setRole(e.target.value)} placeholder="e.g. Team Lead" />
           </Field>
           <Field label="Company Name">
-            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. REI Team" />
+            <Input value={company} onChange={(e) => setCompany(e.target.value)} placeholder="e.g. Alan's Workspace" />
           </Field>
         </div>
 
@@ -812,7 +812,7 @@ function AboutSection() {
       <div className="space-y-4 text-sm">
         <div className="flex items-center justify-between py-2 border-b border-white/[0.06]">
           <span className="text-slate-400">App</span>
-          <span className="text-slate-200 font-medium">REI Team Admin</span>
+          <span className="text-slate-200 font-medium">Alan's Workspace</span>
         </div>
         <div className="flex items-center justify-between py-2 border-b border-white/[0.06]">
           <span className="text-slate-400">Version</span>

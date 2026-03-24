@@ -1,4 +1,4 @@
-export const APP_NAME = "Renewable Energy Incentives";
+export const APP_NAME = "Alan's Workspace";
 
 export type NavChild = { label: string; href: string };
 
@@ -11,6 +11,15 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Meetings", href: "/meetings" },
   { label: "Media Posting", href: "/media-posting" },
   { label: "Sales Funnel", href: "/sales-funnel" },
+  {
+    label: "Observation Reports",
+    href: "/site-reports",
+    children: [
+      { label: "Dashboard", href: "/site-reports" },
+      { label: "Projects", href: "/site-reports/projects" },
+      { label: "New Report", href: "/site-reports/new" },
+    ],
+  },
   {
     label: "Social Media",
     href: "/social-media",

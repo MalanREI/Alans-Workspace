@@ -41,7 +41,7 @@ export function PlatformPreviewTab({ platform, content, imageUrl }: Props) {
         <div className="flex items-center gap-2 p-3 border-b border-white/[0.06]">
           <div className="w-8 h-8 rounded-full bg-emerald-600/30 border border-emerald-500/30 flex items-center justify-center text-xs text-emerald-400 font-bold">RE</div>
           <div>
-            <div className="text-xs font-medium text-slate-200">REI Team</div>
+            <div className="text-xs font-medium text-slate-200">Alan's Workspace</div>
             <div className="text-xs text-slate-500">{PLATFORM_LABELS[platform]}</div>
           </div>
         </div>

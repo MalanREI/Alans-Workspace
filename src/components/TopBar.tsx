@@ -84,7 +84,7 @@ export function TopBar({ onToggleSidebar }: { onToggleSidebar: () => void }) {
           <Button variant="ghost" onClick={onToggleSidebar} aria-label="Toggle sidebar">
             ☰
           </Button>
-          <div className="text-sm text-slate-400">REI Ops</div>
+          <div className="text-sm text-slate-400">Alan's Workspace</div>
         </div>
 
         {/* Global recording indicator */}

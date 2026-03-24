@@ -36,7 +36,7 @@ export function Sidebar({ collapsed, onToggle }: { collapsed: boolean; onToggle:
         <div className="flex items-center justify-between gap-2">
           {!collapsed && (
             <a href="https://renewableenergyincentives.com" target="_blank" rel="noopener noreferrer">
-              <img src="/logo.png" alt="Renewable Energy Incentives" className="h-14 w-auto" />
+              <img src="/logo.png" alt="Alan's Workspace" className="h-14 w-auto" />
             </a>
           )}
           <Button variant="ghost" onClick={onToggle} aria-label="Toggle sidebar">

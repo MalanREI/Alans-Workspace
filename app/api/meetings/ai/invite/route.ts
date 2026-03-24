@@ -36,7 +36,7 @@ function buildIcs(opts: {
   const lines: string[] = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//REI Admin//Meetings//EN",
+    "PRODID:-//Alan's Workspace//Meetings//EN",
     "CALSCALE:GREGORIAN",
     "METHOD:REQUEST",
     "BEGIN:VEVENT",
@@ -101,7 +101,7 @@ export async function POST(req: Request) {
       start,
       end,
       summary: m.data.title,
-      description: `REI meeting. Open the meeting page for agenda, tasks, and minutes: ${url}`,
+      description: `Meeting. Open the meeting page for agenda, tasks, and minutes: ${url}`,
       location: m.data.location,
       organizerEmail: fromEmail,
       attendees,

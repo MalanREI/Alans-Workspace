@@ -384,7 +384,7 @@ function MiniBarChart({ data, labels }: { data: number[]; labels: string[] }) {
 function HeaderQuickAction({ href, icon, label }: { href: string; icon: string; label: string }) {
   return (
     <Link
-      href={href}
+      href={href as never}
       className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/[0.05] hover:bg-white/[0.09] border border-white/[0.08] text-sm text-slate-300 transition-colors"
     >
       <span>{icon}</span>
@@ -396,7 +396,7 @@ function HeaderQuickAction({ href, icon, label }: { href: string; icon: string; 
 function ActionButton({ href, icon, label }: { href: string; icon: string; label: string }) {
   return (
     <Link
-      href={href}
+      href={href as never}
       className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-white/[0.04] hover:bg-emerald-500/10 border border-white/[0.06] hover:border-emerald-500/20 text-sm text-slate-300 hover:text-emerald-400 transition-all"
     >
       <span className="text-base">{icon}</span>

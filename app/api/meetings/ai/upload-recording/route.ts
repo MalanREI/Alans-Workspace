@@ -2,14 +2,51 @@ import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
 /**
- * Max upload size (bytes)
+ * Max upload size (bytes) — only enforced on the legacy FormData path.
  * Default: 25MB
- * Can be overridden with env var
  */
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_RECORDING_UPLOAD_BYTES || 25_000_000);
 
 export async function POST(req: NextRequest) {
   try {
+    const contentType = req.headers.get("content-type") || "";
+
+    // --- JSON path: browser uploaded file directly to Supabase Storage ---
+    // No file touches this route — just persist the metadata row.
+    if (contentType.includes("application/json")) {
+      const body = await req.json();
+      const { meetingId, sessionId, storagePath, durationSeconds, userId } = body as {
+        meetingId?: string;
+        sessionId?: string;
+        storagePath?: string;
+        durationSeconds?: number;
+        userId?: string;
+      };
+
+      if (!meetingId || !sessionId || !storagePath) {
+        return NextResponse.json(
+          { error: "Missing meetingId, sessionId, or storagePath" },
+          { status: 400 }
+        );
+      }
+
+      const admin = supabaseAdmin();
+      const { error: dbError } = await admin.from("meeting_recordings").insert({
+        session_id: sessionId,
+        storage_path: storagePath,
+        duration_seconds: durationSeconds ?? null,
+        created_by: userId || null,
+      });
+
+      if (dbError) {
+        console.error("Failed to save recording record (JSON path)", dbError);
+        return NextResponse.json({ error: "Failed to save recording record" }, { status: 500 });
+      }
+
+      return NextResponse.json({ success: true, recordingPath: storagePath });
+    }
+
+    // --- Legacy FormData path: kept for local dev / fallback ---
     const formData = await req.formData();
 
     const meetingId = (formData.get("meetingId") as string | null) ?? null;
@@ -38,39 +75,29 @@ export async function POST(req: NextRequest) {
     const recordingsBucket = process.env.RECORDINGS_BUCKET || "meeting-recordings";
     const storagePath = `${meetingId}/${sessionId}/recording_${Date.now()}.webm`;
 
-    // Upload to Supabase storage
     const buffer = Buffer.from(await file.arrayBuffer());
     const { error: uploadError } = await admin.storage
       .from(recordingsBucket)
-      .upload(storagePath, buffer, {
-        contentType: "audio/webm",
-        upsert: false,
-      });
+      .upload(storagePath, buffer, { contentType: "audio/webm", upsert: false });
 
     if (uploadError) {
-      console.error("Failed to upload recording to storage", uploadError);
+      console.error("Failed to upload recording to storage (FormData path)", uploadError);
       return NextResponse.json({ error: "Failed to upload recording" }, { status: 500 });
     }
 
-    // Save record in meeting_recordings table
-    const { error: dbError } = await admin
-      .from("meeting_recordings")
-      .insert({
-        session_id: sessionId,
-        storage_path: storagePath,
-        duration_seconds: durationSeconds ? Number(durationSeconds) : null,
-        created_by: createdBy,
-      });
+    const { error: dbError } = await admin.from("meeting_recordings").insert({
+      session_id: sessionId,
+      storage_path: storagePath,
+      duration_seconds: durationSeconds ? Number(durationSeconds) : null,
+      created_by: createdBy,
+    });
 
     if (dbError) {
-      console.error("Failed to save recording record", dbError);
+      console.error("Failed to save recording record (FormData path)", dbError);
       return NextResponse.json({ error: "Failed to save recording record" }, { status: 500 });
     }
 
-    return NextResponse.json({
-      success: true,
-      recordingPath: storagePath,
-    });
+    return NextResponse.json({ success: true, recordingPath: storagePath });
   } catch (err: unknown) {
     console.error("Upload recording error:", err);
     return NextResponse.json(

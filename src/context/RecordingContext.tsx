@@ -48,7 +48,8 @@ export function useRecording(): RecordingContextValue {
 }
 
 /**
- * Upload a blob to the recording API. Returns the storage path or null on failure.
+ * Upload a blob directly to Supabase Storage, then POST metadata to the API.
+ * Returns the storage path or null on failure.
  * This is a pure helper — no state side-effects.
  */
 async function uploadSegment(
@@ -58,30 +59,50 @@ async function uploadSegment(
   durationSeconds: number
 ): Promise<string | null> {
   try {
-    const form = new FormData();
-    form.append("meetingId", meetingId);
-    form.append("sessionId", sessionId);
-    form.append("durationSeconds", String(durationSeconds));
-    try {
-      const sb = supabaseBrowser();
-      const u = await sb.auth.getUser();
-      const uid = u.data?.user?.id || "";
-      if (uid) form.append("userId", uid);
-    } catch {
-      // ignore auth errors during upload
-    }
-    form.append("file", blob, `segment_${Date.now()}.webm`);
+    const sb = supabaseBrowser();
 
-    const res = await fetch("/api/meetings/ai/upload-recording", { method: "POST", body: form });
+    // Resolve userId (best-effort)
+    let userId = "";
+    try {
+      const u = await sb.auth.getUser();
+      userId = u.data?.user?.id || "";
+    } catch {
+      // ignore auth errors
+    }
+
+    // Generate storage path
+    const storagePath = `${meetingId}/${sessionId}/recording_${Date.now()}.webm`;
+
+    console.log(`[recording] Direct Supabase upload: path=${storagePath}, size=${blob.size} bytes`);
+
+    // Upload blob directly to Supabase Storage (bypasses Vercel 4.5MB limit)
+    const { error: uploadError } = await sb.storage
+      .from("meeting-recordings")
+      .upload(storagePath, blob, { contentType: "audio/webm", upsert: false });
+
+    if (uploadError) {
+      console.error("[recording] Supabase upload result: error", uploadError);
+      return null;
+    }
+    console.log(`[recording] Supabase upload result: success path=${storagePath}`);
+
+    // POST only metadata (no file) to API — well under Vercel's 4.5MB limit
+    console.log(`[recording] Metadata POST to API: storagePath=${storagePath}`);
+    const res = await fetch("/api/meetings/ai/upload-recording", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ meetingId, sessionId, storagePath, durationSeconds, userId }),
+    });
+
     if (!res.ok) {
       const j = await res.json().catch(() => ({}));
-      console.error("Segment upload failed:", j?.error || res.statusText);
+      console.error("[recording] Metadata POST failed:", j?.error || res.statusText);
       return null;
     }
     const j = await res.json().catch(() => ({}));
-    return j?.recordingPath || null;
+    return j?.recordingPath || storagePath;
   } catch (e) {
-    console.error("Segment upload error:", e);
+    console.error("[recording] Segment upload error:", e);
     return null;
   }
 }

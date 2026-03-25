@@ -385,11 +385,14 @@ export async function POST(req: Request) {
       stack: err?.stack?.split("\n").slice(0, 5).join("\n"),
     });
     if (sessionId) {
-      await admin
-        .from("meeting_minutes_sessions")
-        .update({ ai_status: "error", ai_error: `Summarize: ${msg}` })
-        .eq("id", sessionId)
-        .catch((e2) => console.error("[summarize] failed to save error status:", e2));
+      try {
+        await admin
+          .from("meeting_minutes_sessions")
+          .update({ ai_status: "error", ai_error: `Summarize: ${msg}` })
+          .eq("id", sessionId);
+      } catch (e2) {
+        console.error("[summarize] failed to save error status:", e2);
+      }
     }
     return NextResponse.json({ error: msg }, { status: 500 });
   }

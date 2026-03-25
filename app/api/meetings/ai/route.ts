@@ -54,11 +54,14 @@ export async function POST(req: Request) {
     const msg = err?.message ?? "Failed to queue AI processing";
     console.error("[ai] error:", { sessionId, meetingId, message: msg });
     if (sessionId) {
-      await admin
-        .from("meeting_minutes_sessions")
-        .update({ ai_status: "error", ai_error: msg })
-        .eq("id", sessionId)
-        .catch((e2) => console.error("[ai] failed to save error status:", e2));
+      try {
+        await admin
+          .from("meeting_minutes_sessions")
+          .update({ ai_status: "error", ai_error: msg })
+          .eq("id", sessionId);
+      } catch (e2) {
+        console.error("[ai] failed to save error status:", e2);
+      }
     }
     return NextResponse.json({ error: msg }, { status: 500 });
   }

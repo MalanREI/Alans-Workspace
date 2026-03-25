@@ -801,6 +801,8 @@ async function buildPdf(opts: {
 }
 
 export async function POST(req: Request) {
+  let sessionId = "";
+  let meetingId = "";
   try {
     requireInternalToken(req);
 
@@ -809,8 +811,10 @@ export async function POST(req: Request) {
       sessionId?: string;
     };
 
-    const meetingId = String(body.meetingId ?? "").trim();
-    const sessionId = String(body.sessionId ?? "").trim();
+    meetingId = String(body.meetingId ?? "").trim();
+    sessionId = String(body.sessionId ?? "").trim();
+
+    console.log(`[finalize] starting meetingId=${meetingId} sessionId=${sessionId}`);
 
     if (!meetingId || !sessionId) {
       return NextResponse.json({ error: "meetingId + sessionId required" }, { status: 400 });
@@ -1074,7 +1078,7 @@ export async function POST(req: Request) {
     });
 
     // Upload PDF
-    const pdfBucket = requireEnv("MINUTES_PDF_BUCKET");
+    const pdfBucket = process.env.MINUTES_PDF_BUCKET || "meeting-minutes-pdfs";
     const pdfPath = `meetings/${meetingId}/sessions/${sessionId}/minutes.pdf`;
 
     const upPdf = await admin.storage.from(pdfBucket).upload(pdfPath, pdfBytes, {
@@ -1110,9 +1114,34 @@ export async function POST(req: Request) {
       // ignore
     }
 
+    // Mark processing complete — this is what the frontend polls for
+    await admin
+      .from("meeting_minutes_sessions")
+      .update({ ai_status: "done", ai_processed_at: new Date().toISOString() })
+      .eq("id", sessionId);
+
+    console.log(`[finalize] done meetingId=${meetingId} sessionId=${sessionId} pdfPath=${pdfPath}`);
+
     return NextResponse.json({ ok: true, pdfPath, pdfUrl });
   } catch (e: unknown) {
-    const errorMessage = (e as Error)?.message || "";
+    const err = e as Error;
+    const errorMessage = err?.message || "";
+    console.error("[finalize] error:", {
+      meetingId,
+      sessionId,
+      message: errorMessage,
+      stack: err?.stack?.split("\n").slice(0, 5).join("\n"),
+    });
+    if (sessionId) {
+      try {
+        await supabaseAdmin()
+          .from("meeting_minutes_sessions")
+          .update({ ai_status: "error", ai_error: `Finalize: ${errorMessage}` })
+          .eq("id", sessionId);
+      } catch {
+        // ignore secondary failure
+      }
+    }
     const status = String(errorMessage).toLowerCase().includes("unauthorized") ? 401 : 500;
     return NextResponse.json({ error: errorMessage || "Finalize failed" }, { status });
   }

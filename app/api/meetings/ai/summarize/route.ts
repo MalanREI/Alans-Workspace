@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import OpenAI from "openai";
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
@@ -321,21 +321,28 @@ export async function POST(req: Request) {
       .eq("id", sessionId);
 
     // Fire-and-forget: finalize (PDF generation)
+    // after() keeps the Lambda alive after the response so the fetch isn't killed on return.
     const baseUrl = process.env.VERCEL_URL
       ? `https://${process.env.VERCEL_URL}`
       : process.env.SITE_URL || "http://localhost:3000";
     const internalToken = process.env.INTERNAL_JOB_TOKEN || "";
 
-    fetch(`${baseUrl}/api/meetings/ai/finalize`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(internalToken ? { "x-internal-token": internalToken } : {}),
-      },
-      body: JSON.stringify({ meetingId, sessionId }),
-    }).catch((err: unknown) => {
-      // Non-fatal — PDF can be regenerated manually
-      console.error("[summarize] failed to trigger finalize:", (err as Error)?.message);
+    after(async () => {
+      console.log(`[summarize] firing finalize for session=${sessionId}`);
+      try {
+        const res = await fetch(`${baseUrl}/api/meetings/ai/finalize`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(internalToken ? { "x-internal-token": internalToken } : {}),
+          },
+          body: JSON.stringify({ meetingId, sessionId }),
+        });
+        console.log(`[summarize] finalize response: ${res.status}`);
+      } catch (err: unknown) {
+        // Non-fatal — PDF can be regenerated manually
+        console.error("[summarize] failed to trigger finalize:", (err as Error)?.message);
+      }
     });
 
     return NextResponse.json({

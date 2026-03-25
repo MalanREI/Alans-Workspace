@@ -1870,8 +1870,14 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
           return;
         }
 
-        if (status === "processing") {
-          setInfo("⏳ AI is transcribing and summarizing the recording...");
+        if (status === "processing" || status === "queued" || status === "transcribing" || status === "transcribed" || status === "summarizing" || status === "summarized") {
+          const label =
+            status === "transcribing" ? "⏳ Transcribing recording..." :
+            status === "transcribed"  ? "⏳ Transcription done — generating notes..." :
+            status === "summarizing"  ? "⏳ Generating meeting notes..." :
+            status === "summarized"   ? "⏳ Notes saved — generating PDF..." :
+            "⏳ AI is processing the recording...";
+          setInfo(label);
         }
       }
     }

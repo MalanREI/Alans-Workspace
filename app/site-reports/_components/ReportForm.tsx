@@ -37,18 +37,73 @@ function makeItem(date = ""): ItemFormEntry {
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function SectionHeader({ title, count }: { title: string; count?: number }) {
+type AccordionSectionProps = {
+  title: string;
+  count: number;
+  summary: string;
+  isOpen: boolean;
+  onToggle: () => void;
+  headerRef?: (el: HTMLButtonElement | null) => void;
+  completeIndicator?: string | null;
+  children: React.ReactNode;
+};
+
+function AccordionSection({
+  title,
+  count,
+  summary,
+  isOpen,
+  onToggle,
+  headerRef,
+  completeIndicator,
+  children,
+}: AccordionSectionProps) {
   return (
-    <div className="flex items-center gap-2 mb-4">
-      <div className="h-px flex-1 bg-white/[0.06]" />
-      <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider px-2">
-        {title}
-        {count !== undefined && (
-          <span className="ml-1.5 text-slate-500 normal-case tracking-normal">({count})</span>
-        )}
-      </h2>
-      <div className="h-px flex-1 bg-white/[0.06]" />
-    </div>
+    <section className="rounded-2xl border border-white/[0.06] bg-surface p-2 sm:p-3">
+      <button
+        type="button"
+        onClick={onToggle}
+        ref={headerRef}
+        className="w-full rounded-xl px-3 py-3 sm:py-3.5 text-left hover:bg-white/[0.03] transition-colors"
+      >
+        <div className="flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap">
+              <h2 className="text-sm font-semibold uppercase tracking-wider text-slate-200">{title}</h2>
+              <span className="inline-flex items-center rounded-full border border-white/10 bg-base px-2 py-0.5 text-xs text-slate-300">
+                {count}
+              </span>
+              {completeIndicator && (
+                <span className="inline-flex items-center rounded-full border border-emerald-500/25 bg-emerald-500/15 px-2 py-0.5 text-xs text-emerald-300">
+                  {completeIndicator}
+                </span>
+              )}
+            </div>
+            {!isOpen && (
+              <p className="mt-1 text-sm text-slate-400 line-clamp-2">{summary}</p>
+            )}
+          </div>
+          <span
+            className={[
+              "text-slate-400 transition-transform duration-300 shrink-0",
+              isOpen ? "rotate-180" : "rotate-0",
+            ].join(" ")}
+            aria-hidden="true"
+          >
+            ▾
+          </span>
+        </div>
+      </button>
+
+      <div
+        className={[
+          "grid transition-all duration-300 ease-out",
+          isOpen ? "grid-rows-[1fr] opacity-100 mt-2" : "grid-rows-[0fr] opacity-0",
+        ].join(" ")}
+      >
+        <div className="overflow-hidden">{children}</div>
+      </div>
+    </section>
   );
 }
 
@@ -104,8 +159,8 @@ function ItemStatus({ value, onChange }: { value: string; onChange: (v: string) 
   );
 }
 
-// Milestone status 4-button selector
-function MilestoneStatusButtons({
+// Milestone status compact selector for quick status mode
+function CompactMilestoneStatusButtons({
   value,
   onChange,
 }: {
@@ -113,19 +168,20 @@ function MilestoneStatusButtons({
   onChange: (v: string) => void;
 }) {
   const opts = [
-    { v: "on_track",   label: "Green",     active: "bg-emerald-600 text-white border-transparent", inactive: "border-white/10 text-slate-400" },
-    { v: "risk",       label: "Yellow",    active: "bg-amber-500 text-white border-transparent",   inactive: "border-white/10 text-slate-400" },
-    { v: "behind",     label: "Red",       active: "bg-red-600 text-white border-transparent",     inactive: "border-white/10 text-slate-400" },
-    { v: "completed",  label: "Completed", active: "bg-blue-600 text-white border-transparent",    inactive: "border-white/10 text-slate-400" },
+    { v: "on_track", label: "G", active: "bg-emerald-600 text-white border-transparent", inactive: "border-white/10 text-slate-400" },
+    { v: "risk", label: "Y", active: "bg-amber-500 text-white border-transparent", inactive: "border-white/10 text-slate-400" },
+    { v: "behind", label: "R", active: "bg-red-600 text-white border-transparent", inactive: "border-white/10 text-slate-400" },
+    { v: "completed", label: "C", active: "bg-blue-600 text-white border-transparent", inactive: "border-white/10 text-slate-400" },
   ];
   return (
-    <div className="grid grid-cols-4 gap-2">
+    <div className="grid grid-cols-4 gap-1.5 sm:gap-2">
       {opts.map((o) => (
         <button
           key={o.v}
           type="button"
           onClick={() => onChange(o.v)}
-          className={`py-2.5 rounded-lg text-sm font-medium border transition-all ${value === o.v ? o.active : "bg-white/[0.03] " + o.inactive}`}
+          className={`min-h-9 sm:min-h-10 rounded-lg text-sm font-semibold border transition-all ${value === o.v ? o.active : "bg-white/[0.03] " + o.inactive}`}
+          title={o.v}
         >
           {o.label}
         </button>
@@ -318,6 +374,7 @@ type ReportFormProps = {
 export function ReportForm({ initialData }: ReportFormProps) {
   const router = useRouter();
   const isEdit = !!initialData;
+  type SectionKey = "schedule" | "highlights" | "recommendations" | "risks" | "escalations";
 
   // Project & basic info
   const [projects, setProjects] = useState<SiteProject[]>([]);
@@ -336,9 +393,87 @@ export function ReportForm({ initialData }: ReportFormProps) {
   const [recommendations, setRecommendations] = useState<ItemFormEntry[]>(initialData?.recommendations ?? []);
   const [risks, setRisks] = useState<ItemFormEntry[]>(initialData?.risks ?? []);
   const [escalations, setEscalations] = useState<ItemFormEntry[]>(initialData?.escalations ?? []);
+  const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>({
+    schedule: false,
+    highlights: false,
+    recommendations: false,
+    risks: false,
+    escalations: false,
+  });
+  const sectionHeaderRefs = useRef<Record<SectionKey, HTMLButtonElement | null>>({
+    schedule: null,
+    highlights: null,
+    recommendations: null,
+    risks: null,
+    escalations: null,
+  });
+  const [notesOpenByMilestone, setNotesOpenByMilestone] = useState<Record<string, boolean>>({});
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const milestoneRows = useMemo(
+    () => milestones.filter((m) => !m.is_spacer),
+    [milestones]
+  );
+  const milestoneCompleted = useMemo(
+    () => milestoneRows.filter((m) => m.status === "completed").length,
+    [milestoneRows]
+  );
+  const milestoneOnTrack = useMemo(
+    () => milestoneRows.filter((m) => m.status === "on_track").length,
+    [milestoneRows]
+  );
+  const milestoneSummary = useMemo(() => {
+    if (milestoneRows.length === 0) return "No milestones loaded yet";
+    return `${milestoneRows.length} milestones - ${milestoneCompleted} completed, ${milestoneOnTrack} on track`;
+  }, [milestoneRows.length, milestoneCompleted, milestoneOnTrack]);
+
+  const highlightsSummary = highlights.length > 0
+    ? `${highlights.length} highlight${highlights.length === 1 ? "" : "s"} added`
+    : "No highlights added";
+  const recommendationsSummary = recommendations.length > 0
+    ? `${recommendations.length} recommendation${recommendations.length === 1 ? "" : "s"} added`
+    : "No recommendations added";
+  const risksSummary = risks.length > 0
+    ? `${risks.length} risk${risks.length === 1 ? "" : "s"} logged`
+    : "No risks logged";
+  const escalationsSummary = escalations.length > 0
+    ? `${escalations.length} escalation${escalations.length === 1 ? "" : "s"} added`
+    : "No escalations added";
+
+  function toggleSection(section: SectionKey) {
+    setOpenSections((prev) => {
+      const wasOpen = prev[section];
+      const next = { ...prev, [section]: !wasOpen };
+      if (wasOpen) {
+        setTimeout(() => {
+          sectionHeaderRefs.current[section]?.scrollIntoView({ behavior: "smooth", block: "start" });
+        }, 220);
+      }
+      return next;
+    });
+  }
+
+  function setAllMilestoneNotes(open: boolean) {
+    const next: Record<string, boolean> = {};
+    for (const ms of milestoneRows) next[ms.localId] = open;
+    setNotesOpenByMilestone(next);
+  }
+
+  function toggleMilestoneNote(localId: string) {
+    setNotesOpenByMilestone((prev) => ({ ...prev, [localId]: !prev[localId] }));
+  }
+
+  useEffect(() => {
+    setNotesOpenByMilestone((prev) => {
+      const next: Record<string, boolean> = {};
+      for (const ms of milestoneRows) {
+        next[ms.localId] = prev[ms.localId] ?? false;
+      }
+      return next;
+    });
+  }, [milestoneRows]);
 
   // Load user name for rep field — use functional updater to avoid overwriting user input
   useEffect(() => {
@@ -583,111 +718,161 @@ export function ReportForm({ initialData }: ReportFormProps) {
       </div>
 
       {/* ── 2. Schedule Observation ────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <SectionHeader title="Schedule Observation" count={milestones.filter((m) => !m.is_spacer).length} />
-        {milestones.length === 0 && (
-          <p className="text-sm text-slate-500 text-center py-4">
-            {projectId
-              ? "No milestone templates for this project yet. Add them below or in Projects."
-              : "Select a project to auto-load its milestone templates."}
-          </p>
-        )}
-        <div className="space-y-3">
-          {milestones.map((ms) => {
-            if (ms.is_spacer) {
-              return <div key={ms.localId} className="h-3" />;
-            }
-            const isCompleted = ms.status === "completed";
-            return (
-              <div
-                key={ms.localId}
-                className="rounded-xl border border-white/[0.08] bg-white/[0.02] p-4 space-y-3"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  {ms.milestone_id ? (
-                    <div className="flex-1">
-                      <p className="font-medium text-slate-200">{ms.milestone_name}</p>
-                      <div className="flex gap-4 mt-0.5 flex-wrap">
-                        {ms.milestone_date && (
-                          <p className="text-xs text-slate-500">Original Target: {ms.milestone_date}</p>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <input
-                      type="text"
-                      value={ms.milestone_name}
-                      onChange={(e) => updateMilestone(ms.localId, { milestone_name: e.target.value })}
-                      placeholder="Milestone name"
-                      className="flex-1 rounded-lg border border-white/10 bg-base px-3 py-2 text-base text-slate-200 placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-500/40"
-                    />
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => removeMilestone(ms.localId)}
-                    className="text-slate-500 hover:text-red-400 text-lg leading-none shrink-0 mt-0.5"
-                  >✕</button>
-                </div>
-                <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Status</label>
-                  <MilestoneStatusButtons
-                    value={ms.status}
-                    onChange={(v) => {
-                      const updates: Partial<MilestoneFormEntry> = { status: v as MilestoneFormEntry["status"] };
-                      if (v === "completed") {
-                        if (!ms.comments) updates.comments = "-";
-                      } else {
-                        updates.completed_date = "";
-                      }
-                      updateMilestone(ms.localId, updates);
-                    }}
-                  />
-                </div>
-                {!isCompleted && (
-                  <div>
-                    <label className="block text-sm text-slate-400 mb-1.5">Scheduled Date (Current Plan)</label>
-                    <input
-                      type="date"
-                      value={ms.scheduled_date}
-                      onChange={(e) => updateMilestone(ms.localId, { scheduled_date: e.target.value })}
-                      className="w-full rounded-lg border border-white/10 bg-base px-4 py-2.5 text-base text-slate-200 outline-none focus:ring-2 focus:ring-emerald-500/40"
-                    />
-                  </div>
-                )}
-                {isCompleted && (
-                  <div>
-                    <label className="block text-sm text-slate-400 mb-1.5">Completed Date</label>
-                    <input
-                      type="date"
-                      value={ms.completed_date}
-                      onChange={(e) => updateMilestone(ms.localId, { completed_date: e.target.value })}
-                      className="w-full rounded-lg border border-white/10 bg-base px-4 py-2.5 text-base text-slate-200 outline-none focus:ring-2 focus:ring-emerald-500/40"
-                    />
-                  </div>
-                )}
-                <div>
-                  <label className="block text-sm text-slate-400 mb-1.5">Comments</label>
-                  <textarea
-                    value={ms.comments}
-                    onChange={(e) => updateMilestone(ms.localId, { comments: e.target.value })}
-                    placeholder={isCompleted ? "-" : "Optional notes…"}
-                    rows={2}
-                    className="w-full rounded-lg border border-white/10 bg-base px-4 py-2.5 text-base text-slate-200 placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-none"
-                  />
-                </div>
+      <AccordionSection
+        title="Schedule Observation"
+        count={milestoneRows.length}
+        summary={milestoneSummary}
+        isOpen={openSections.schedule}
+        onToggle={() => toggleSection("schedule")}
+        headerRef={(el) => { sectionHeaderRefs.current.schedule = el; }}
+        completeIndicator={milestoneRows.length > 0 ? `${milestoneCompleted}/${milestoneRows.length} complete` : null}
+      >
+        <div className="space-y-3 px-2 pb-2">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+            <p className="text-xs text-slate-400">
+              Quick status mode: update milestone status fast with compact rows.
+            </p>
+            <Button
+              variant="ghost"
+              className="px-3 py-2 text-xs sm:w-auto"
+              onClick={() => setAllMilestoneNotes(!milestoneRows.every((m) => notesOpenByMilestone[m.localId]))}
+            >
+              {milestoneRows.length > 0 && milestoneRows.every((m) => notesOpenByMilestone[m.localId]) ? "Collapse All" : "Expand All"}
+            </Button>
+          </div>
+
+          {milestones.length === 0 && (
+            <p className="text-sm text-slate-500 text-center py-4">
+              {projectId
+                ? "No milestone templates for this project yet. Add milestones below or in Projects."
+                : "Select a project to auto-load its milestone templates."}
+            </p>
+          )}
+
+          {milestones.length > 0 && (
+            <div className="rounded-xl border border-white/[0.08] overflow-hidden">
+              <div className="hidden sm:grid sm:grid-cols-[minmax(0,1.1fr)_minmax(220px,1fr)_140px] gap-3 px-3 py-2 bg-white/[0.03] border-b border-white/[0.08] text-xs uppercase tracking-wide text-slate-400">
+                <span>Name</span>
+                <span>Status</span>
+                <span>Completed Date</span>
               </div>
-            );
-          })}
+
+              <div className="divide-y divide-white/[0.06]">
+                {milestones.map((ms) => {
+                  if (ms.is_spacer) {
+                    return (
+                      <div key={ms.localId} className="px-3 py-3 bg-white/[0.01]">
+                        <div className="h-px bg-white/[0.12]" />
+                      </div>
+                    );
+                  }
+
+                  const isCompleted = ms.status === "completed";
+
+                  return (
+                    <div key={ms.localId} className="px-3 py-3 sm:py-2.5">
+                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1.1fr)_minmax(220px,1fr)_140px] sm:items-center">
+                        <div className="min-w-0">
+                          {ms.milestone_id ? (
+                            <div>
+                              <p className="font-medium text-slate-200 truncate">{ms.milestone_name}</p>
+                              {(ms.milestone_date || ms.scheduled_date) && (
+                                <p className="text-xs text-slate-500 mt-0.5 truncate">
+                                  {ms.milestone_date ? `Target: ${ms.milestone_date}` : ""}
+                                  {ms.milestone_date && ms.scheduled_date ? " - " : ""}
+                                  {ms.scheduled_date ? `Current: ${ms.scheduled_date}` : ""}
+                                </p>
+                              )}
+                            </div>
+                          ) : (
+                            <input
+                              type="text"
+                              value={ms.milestone_name}
+                              onChange={(e) => updateMilestone(ms.localId, { milestone_name: e.target.value })}
+                              placeholder="Milestone name"
+                              className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-base text-slate-200 placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-500/40"
+                            />
+                          )}
+                        </div>
+
+                        <CompactMilestoneStatusButtons
+                          value={ms.status}
+                          onChange={(v) => {
+                            const updates: Partial<MilestoneFormEntry> = { status: v as MilestoneFormEntry["status"] };
+                            if (v === "completed") {
+                              updates.completed_date = ms.completed_date || todayStr();
+                              if (!ms.comments) updates.comments = "-";
+                            } else {
+                              updates.completed_date = "";
+                            }
+                            updateMilestone(ms.localId, updates);
+                          }}
+                        />
+
+                        <div>
+                          {isCompleted ? (
+                            <input
+                              type="date"
+                              value={ms.completed_date}
+                              onChange={(e) => updateMilestone(ms.localId, { completed_date: e.target.value })}
+                              className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 outline-none focus:ring-2 focus:ring-emerald-500/40"
+                            />
+                          ) : (
+                            <p className="text-xs text-slate-500 sm:text-right">Set status to C to add date</p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => toggleMilestoneNote(ms.localId)}
+                          className="text-xs text-emerald-400 hover:text-emerald-300 underline"
+                        >
+                          {notesOpenByMilestone[ms.localId] ? "Hide note" : (ms.comments ? "Edit note" : "Add note")}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removeMilestone(ms.localId)}
+                          className="text-slate-500 hover:text-red-400 text-sm"
+                        >
+                          Remove
+                        </button>
+                      </div>
+
+                      {notesOpenByMilestone[ms.localId] && (
+                        <textarea
+                          value={ms.comments}
+                          onChange={(e) => updateMilestone(ms.localId, { comments: e.target.value })}
+                          placeholder={isCompleted ? "-" : "Optional notes..."}
+                          rows={2}
+                          className="mt-2 w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-none"
+                        />
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <Button variant="ghost" onClick={addCustomMilestone} className="w-full py-3">
+            + Add Milestone
+          </Button>
         </div>
-        <Button variant="ghost" onClick={addCustomMilestone} className="w-full py-3">
-          + Add Milestone
-        </Button>
-      </div>
+      </AccordionSection>
 
       {/* ── 3. Highlights ─────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <SectionHeader title="Highlights" count={highlights.length} />
-        <div className="space-y-3">
+      <AccordionSection
+        title="Highlights"
+        count={highlights.length}
+        summary={highlightsSummary}
+        isOpen={openSections.highlights}
+        onToggle={() => toggleSection("highlights")}
+        headerRef={(el) => { sectionHeaderRefs.current.highlights = el; }}
+        completeIndicator={highlights.length > 0 ? "✓" : null}
+      >
+        <div className="space-y-3 px-2 pb-2">
           {highlights.map((item, i) => (
             <ItemCard
               key={item.localId}
@@ -700,16 +885,23 @@ export function ReportForm({ initialData }: ReportFormProps) {
               onRemove={() => removeItem(setHighlights, item.localId)}
             />
           ))}
+          <Button variant="ghost" onClick={() => setHighlights((p) => [...p, makeItem()])} className="w-full py-3">
+            + Add Highlight
+          </Button>
         </div>
-        <Button variant="ghost" onClick={() => setHighlights((p) => [...p, makeItem()])} className="w-full py-3">
-          + Add Highlight
-        </Button>
-      </div>
+      </AccordionSection>
 
-      {/* ── 4. Recommendations to Contractors ─────────────────────────────── */}
-      <div className="space-y-4">
-        <SectionHeader title="Recommendations to Contractors" count={recommendations.length} />
-        <div className="space-y-3">
+      {/* ── 4. Recommendations ─────────────────────────────────────────────── */}
+      <AccordionSection
+        title="Recommendations"
+        count={recommendations.length}
+        summary={recommendationsSummary}
+        isOpen={openSections.recommendations}
+        onToggle={() => toggleSection("recommendations")}
+        headerRef={(el) => { sectionHeaderRefs.current.recommendations = el; }}
+        completeIndicator={recommendations.length > 0 ? "✓" : null}
+      >
+        <div className="space-y-3 px-2 pb-2">
           {recommendations.map((item, i) => (
             <ItemCard
               key={item.localId}
@@ -722,16 +914,23 @@ export function ReportForm({ initialData }: ReportFormProps) {
               onRemove={() => removeItem(setRecommendations, item.localId)}
             />
           ))}
+          <Button variant="ghost" onClick={() => setRecommendations((p) => [...p, makeItem(date)])} className="w-full py-3">
+            + Add Recommendation
+          </Button>
         </div>
-        <Button variant="ghost" onClick={() => setRecommendations((p) => [...p, makeItem(date)])} className="w-full py-3">
-          + Add Recommendation
-        </Button>
-      </div>
+      </AccordionSection>
 
-      {/* ── 5. Risks / Opportunities ──────────────────────────────────────── */}
-      <div className="space-y-4">
-        <SectionHeader title="Risks / Opportunities" count={risks.length} />
-        <div className="space-y-3">
+      {/* ── 5. Risks ──────────────────────────────────────────────────────── */}
+      <AccordionSection
+        title="Risks"
+        count={risks.length}
+        summary={risksSummary}
+        isOpen={openSections.risks}
+        onToggle={() => toggleSection("risks")}
+        headerRef={(el) => { sectionHeaderRefs.current.risks = el; }}
+        completeIndicator={risks.length > 0 ? "✓" : null}
+      >
+        <div className="space-y-3 px-2 pb-2">
           {risks.map((item, i) => (
             <ItemCard
               key={item.localId}
@@ -744,23 +943,23 @@ export function ReportForm({ initialData }: ReportFormProps) {
               onRemove={() => removeItem(setRisks, item.localId)}
             />
           ))}
+          <Button variant="ghost" onClick={() => setRisks((p) => [...p, makeItem()])} className="w-full py-3">
+            + Add Risk
+          </Button>
         </div>
-        <Button variant="ghost" onClick={() => setRisks((p) => [...p, makeItem()])} className="w-full py-3">
-          + Add Risk / Opportunity
-        </Button>
-        {risks.length > 0 && (
-          <p className="text-xs text-slate-500 text-center">
-            <Link href="/site-reports" className="text-emerald-400 hover:text-emerald-300 underline">
-              See all risks &gt;&gt;
-            </Link>
-          </p>
-        )}
-      </div>
+      </AccordionSection>
 
       {/* ── 6. Escalations ────────────────────────────────────────────────── */}
-      <div className="space-y-4">
-        <SectionHeader title="Escalations" count={escalations.length} />
-        <div className="space-y-3">
+      <AccordionSection
+        title="Escalations"
+        count={escalations.length}
+        summary={escalationsSummary}
+        isOpen={openSections.escalations}
+        onToggle={() => toggleSection("escalations")}
+        headerRef={(el) => { sectionHeaderRefs.current.escalations = el; }}
+        completeIndicator={escalations.length > 0 ? "✓" : null}
+      >
+        <div className="space-y-3 px-2 pb-2">
           {escalations.map((item, i) => (
             <ItemCard
               key={item.localId}
@@ -773,11 +972,11 @@ export function ReportForm({ initialData }: ReportFormProps) {
               onRemove={() => removeItem(setEscalations, item.localId)}
             />
           ))}
+          <Button variant="ghost" onClick={() => setEscalations((p) => [...p, makeItem()])} className="w-full py-3">
+            + Add Escalation
+          </Button>
         </div>
-        <Button variant="ghost" onClick={() => setEscalations((p) => [...p, makeItem()])} className="w-full py-3">
-          + Add Escalation
-        </Button>
-      </div>
+      </AccordionSection>
 
       {/* ── Submit ────────────────────────────────────────────────────────── */}
       {submitError && (

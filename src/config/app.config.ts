@@ -1,10 +1,10 @@
 export const APP_NAME = "Alan's Workspace";
 
-export type NavChild = { label: string; href: string };
-
-export type NavItem =
-  | { label: string; href: string; children?: never }
-  | { label: string; href: string; children: NavChild[] };
+export type NavItem = {
+  label: string;
+  href: string;
+  children?: NavItem[];
+};
 
 export const NAV_ITEMS: NavItem[] = [
   { label: "Home", href: "/home" },
@@ -12,12 +12,18 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Media Posting", href: "/media-posting" },
   { label: "Sales Funnel", href: "/sales-funnel" },
   {
-    label: "Observation Reports",
+    label: "AT-PD",
     href: "/site-reports",
     children: [
-      { label: "Dashboard", href: "/site-reports" },
-      { label: "Projects", href: "/site-reports/projects" },
-      { label: "New Report", href: "/site-reports/new" },
+      {
+        label: "Observation Reports",
+        href: "/site-reports",
+        children: [
+          { label: "Observations", href: "/site-reports" },
+          { label: "Projects", href: "/site-reports/projects" },
+          { label: "New Report", href: "/site-reports/new" },
+        ],
+      },
     ],
   },
   {

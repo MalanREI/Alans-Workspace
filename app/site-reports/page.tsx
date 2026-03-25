@@ -35,7 +35,7 @@ function formatDate(d: string) {
 
 // ─── Page ─────────────────────────────────────────────────────────────────────
 
-export default function SiteReportsDashboard() {
+export default function SiteReportsObservationsPage() {
   const router = useRouter();
   const [reports, setReports] = useState<ReportWithProject[]>([]);
   const [projects, setProjects] = useState<SiteProject[]>([]);

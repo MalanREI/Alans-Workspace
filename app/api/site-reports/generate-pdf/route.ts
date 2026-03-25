@@ -257,35 +257,66 @@ function drawTableRow(ctx: Ctx, cells: CellDef[], isHeader: boolean, altRow: boo
   return rowH;
 }
 
-// ─── Clickable link row — improvement #11 ─────────────────────────────────────
-
-function drawLinkRow(ctx: Ctx, text: string, url: string) {
-  ensureSpace(ctx, 16);
+function drawFinalTrackerCta(ctx: Ctx, url: string) {
+  ensureSpace(ctx, 88);
   const page = curPage(ctx);
-  const linkY = ctx.y - 11;
-  const size  = 7;
-  const textW = ctx.font.widthOfTextAtSize(text, size);
 
-  page.drawText(text, { x: MARGIN_L, y: linkY, size, font: ctx.font, color: COLOR.blue });
+  ctx.y -= 12;
+  const dividerY = ctx.y;
+  page.drawLine({
+    start: { x: MARGIN_L, y: dividerY },
+    end: { x: PAGE_W - MARGIN_R, y: dividerY },
+    thickness: 0.6,
+    color: COLOR.border,
+  });
+
+  const blurb = "Complete observation history and item tracking available online";
+  const blurbSize = 8.5;
+  const blurbW = ctx.font.widthOfTextAtSize(blurb, blurbSize);
+  const blurbX = (PAGE_W - blurbW) / 2;
+  const blurbY = dividerY - 18;
+  page.drawText(blurb, { x: blurbX, y: blurbY, size: blurbSize, font: ctx.font, color: COLOR.mutedText });
+
+  const cta = "View Project Tracker";
+  const ctaSize = 12;
+  const ctaW = ctx.bold.widthOfTextAtSize(cta, ctaSize);
+  const ctaX = (PAGE_W - ctaW) / 2;
+  const ctaY = blurbY - 20;
+  page.drawText(cta, { x: ctaX, y: ctaY, size: ctaSize, font: ctx.bold, color: COLOR.blue });
+  page.drawLine({
+    start: { x: ctaX, y: ctaY - 1 },
+    end: { x: ctaX + ctaW, y: ctaY - 1 },
+    thickness: 0.7,
+    color: COLOR.blue,
+  });
 
   try {
     const annotRef = ctx.doc.context.register(
       ctx.doc.context.obj({
-        Type:    PDFName.of("Annot"),
+        Type: PDFName.of("Annot"),
         Subtype: PDFName.of("Link"),
-        Rect:    [MARGIN_L, linkY - 2, MARGIN_L + textW, linkY + size + 1],
-        Border:  [0, 0, 0],
-        C:       [],
+        Rect: [ctaX - 2, ctaY - 3, ctaX + ctaW + 2, ctaY + ctaSize + 2],
+        Border: [0, 0, 0],
+        C: [],
         A: ctx.doc.context.obj({
-          S:   PDFName.of("URI"),
+          S: PDFName.of("URI"),
           URI: PDFString.of(url),
         }),
       })
     );
     page.node.addAnnot(annotRef);
-  } catch { /* annotation unsupported — text link still visible */ }
+  } catch {
+    // Annotation support can vary by PDF reader.
+  }
 
-  ctx.y -= 15;
+  const footer = "Confidential - For Internal AT-PD Use Only";
+  const footerSize = 7;
+  const footerW = ctx.font.widthOfTextAtSize(footer, footerSize);
+  const footerX = (PAGE_W - footerW) / 2;
+  const footerY = ctaY - 14;
+  page.drawText(footer, { x: footerX, y: footerY, size: footerSize, font: ctx.font, color: COLOR.mutedText });
+
+  ctx.y = footerY - 8;
 }
 
 // ─── Build the full PDF ───────────────────────────────────────────────────────
@@ -455,19 +486,10 @@ async function buildPdf(report: FullReport, items: SiteReportItem[], publicUrl: 
         ], false, i % 2 === 1);
       });
 
-      if (publicUrl) {
-        ctx.y -= 3;
-        drawLinkRow(ctx, `View all ${label.toLowerCase()} >>`, `${publicUrl}?type=${type}`);
-      }
     }
   }
 
-  // #11: "View Full Report Online →" at bottom
-  if (publicUrl) {
-    ctx.y -= 10;
-    ensureSpace(ctx, 20);
-    drawLinkRow(ctx, "View Full Report Online >>", publicUrl);
-  }
+  drawFinalTrackerCta(ctx, publicUrl);
 
   finalizePageNumbers(ctx);
   return doc.save();
@@ -506,9 +528,17 @@ export async function POST(req: Request) {
     const byType = items.reduce((a, i) => { a[i.type] = (a[i.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
     console.log(`[generate-pdf] items by type:`, byType);
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL
-      ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "https://app.rei-team.com");
-    const publicUrl = `${baseUrl}/site-reports/public/${report.public_share_token}`;
+    const baseUrl = process.env.APP_BASE_URL
+      ?? process.env.SITE_URL
+      ?? "http://localhost:3000";
+    const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
+    const publicToken = report.public_share_token;
+    if (!publicToken) {
+      return NextResponse.json({ error: "Report is missing public_share_token" }, { status: 500 });
+    }
+    const publicUrl = `${normalizedBaseUrl}/site-reports/public/${publicToken}`;
+
+    console.log(`[generate-pdf] embedded tracker url=${publicUrl}`);
 
     const pdfBytes = await buildPdf(report as FullReport, items, publicUrl);
 

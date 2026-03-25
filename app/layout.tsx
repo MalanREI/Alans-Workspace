@@ -7,7 +7,8 @@ export const metadata: Metadata = {
   title: APP_NAME,
   description: "Internal admin panel",
   icons: {
-    icon: "/favicon.png",
+    icon: "/favicon.png?v=20260325",
+    shortcut: "/favicon.png?v=20260325",
   },
 };
 

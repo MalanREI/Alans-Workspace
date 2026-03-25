@@ -152,6 +152,14 @@ export async function GET(req: NextRequest) {
       .eq("parent_id", parentId)
       .order("created_at", { ascending: false });
 
+    console.log("[attachments.GET] supabase response", {
+      meetingId,
+      parentType: parentTypeRaw,
+      parentId,
+      data: q.data,
+      error: q.error,
+    });
+
     if (q.error) {
       return NextResponse.json({ error: `Failed to list attachments: ${q.error.message}` }, { status: 500 });
     }

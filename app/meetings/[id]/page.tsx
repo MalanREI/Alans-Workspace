@@ -888,10 +888,14 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
   }
 
   function onAttachmentCountChange(parentType: AttachmentParentType, parentId: string, count: number) {
-    setAttachmentCounts((prev) => ({
-      ...prev,
-      [attachmentKey(parentType, parentId)]: count,
-    }));
+    setAttachmentCounts((prev) => {
+      const key = attachmentKey(parentType, parentId);
+      if ((prev[key] ?? 0) === count) return prev;
+      return {
+        ...prev,
+        [key]: count,
+      };
+    });
   }
 
   async function loadAttachmentCounts() {

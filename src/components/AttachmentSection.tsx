@@ -64,13 +64,21 @@ export default function AttachmentSection({
   const [err, setErr] = useState<string | null>(null);
   const [busyDeleteId, setBusyDeleteId] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const onCountChangeRef = useRef<Props["onCountChange"]>(onCountChange);
+
+  useEffect(() => {
+    onCountChangeRef.current = onCountChange;
+  }, [onCountChange]);
 
   const canUpload = useMemo(() => !uploading && !loading, [uploading, loading]);
 
   const loadAttachments = useCallback(async () => {
     setLoading(true);
     setErr(null);
+    let timeout: number | null = null;
     try {
+      const controller = new AbortController();
+      timeout = window.setTimeout(() => controller.abort(), 15000);
       const params = new URLSearchParams({
         meetingId,
         parentType,
@@ -78,25 +86,40 @@ export default function AttachmentSection({
       });
       const res = await fetch(`/api/meetings/attachments?${params.toString()}`, {
         cache: "no-store",
+        signal: controller.signal,
       });
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
         attachments?: AttachmentRecord[];
       };
+      console.log("[AttachmentSection] loadAttachments", {
+        meetingId,
+        parentType,
+        parentId,
+        ok: res.ok,
+        status: res.status,
+        data: body.attachments ?? null,
+        error: body.error ?? null,
+      });
       if (!res.ok) {
         throw new Error(body.error ?? "Failed to load attachments");
       }
 
       const rows = body.attachments ?? [];
       setAttachments(rows);
-      onCountChange?.(rows.length);
+      onCountChangeRef.current?.(rows.length);
     } catch (e: unknown) {
+      if (e instanceof DOMException && e.name === "AbortError") {
+        setErr("Loading attachments timed out. Please try again.");
+        return;
+      }
       const message = e instanceof Error ? e.message : "Failed to load attachments";
       setErr(message);
     } finally {
+      if (timeout !== null) window.clearTimeout(timeout);
       setLoading(false);
     }
-  }, [meetingId, onCountChange, parentId, parentType]);
+  }, [meetingId, parentId, parentType]);
 
   useEffect(() => {
     void loadAttachments();

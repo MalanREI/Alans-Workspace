@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextResponse, after } from "next/server";
 import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
 /**
@@ -72,24 +72,50 @@ export async function POST(req: Request) {
         .update({ ai_status: "queued", ai_error: null })
         .eq("id", sessionId);
 
-      // Fire-and-forget: trigger transcription (step 1 of 3: transcribe → summarize → finalize)
+      const transcribeUrl = `${baseUrl}/api/meetings/ai/transcribe`;
       const internalToken = process.env.INTERNAL_JOB_TOKEN || "";
-      fetch(`${baseUrl}/api/meetings/ai/transcribe`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(internalToken ? { "x-internal-token": internalToken } : {}),
-        },
-        body: JSON.stringify({ meetingId, sessionId }),
-      }).catch(async (err: unknown) => {
-        console.error("Failed to auto-trigger AI processing:", err);
-        await admin
-          .from("meeting_minutes_sessions")
-          .update({
-            ai_status: "error",
-            ai_error: "Auto-processing failed to start: " + ((err as Error)?.message || "Unknown"),
-          })
-          .eq("id", sessionId);
+
+      console.log(`[conclude] Scheduling transcribe: ${transcribeUrl}`);
+
+      // after() keeps the function alive after the response is sent so the
+      // outgoing fetch is not killed when Vercel freezes the Lambda context.
+      after(async () => {
+        console.log(`[conclude] Firing transcribe at URL: ${transcribeUrl}`);
+
+        // Abort if the transcribe invocation takes too long to respond —
+        // the transcribe Lambda runs independently so this is safe.
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+
+        try {
+          const response = await fetch(transcribeUrl, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+              "Content-Type": "application/json",
+              ...(internalToken ? { "x-internal-token": internalToken } : {}),
+            },
+            body: JSON.stringify({ meetingId, sessionId }),
+          });
+          console.log(`[conclude] Transcribe fetch response: ${response.status}`);
+        } catch (err: unknown) {
+          const isAbort = (err as Error)?.name === "AbortError";
+          if (isAbort) {
+            // Transcribe is still running — that's fine, it's its own Lambda.
+            console.log("[conclude] Transcribe still processing after 8s (expected for long audio)");
+          } else {
+            console.error("[conclude] Transcribe fetch error:", (err as Error)?.message, err);
+            await admin
+              .from("meeting_minutes_sessions")
+              .update({
+                ai_status: "error",
+                ai_error: "Transcribe trigger failed: " + ((err as Error)?.message || "Unknown"),
+              })
+              .eq("id", sessionId);
+          }
+        } finally {
+          clearTimeout(timer);
+        }
       });
     }
 

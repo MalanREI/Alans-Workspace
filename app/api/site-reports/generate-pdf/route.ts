@@ -528,9 +528,10 @@ export async function POST(req: Request) {
     const byType = items.reduce((a, i) => { a[i.type] = (a[i.type] ?? 0) + 1; return a; }, {} as Record<string, number>);
     console.log(`[generate-pdf] items by type:`, byType);
 
-    const baseUrl = process.env.APP_BASE_URL
-      ?? process.env.SITE_URL
-      ?? "http://localhost:3000";
+    const proto = req.headers.get("x-forwarded-proto") ?? "https";
+    const host = req.headers.get("x-forwarded-host") ?? req.headers.get("host") ?? "";
+    const derivedBase = host ? `${proto}://${host}` : "http://localhost:3000";
+    const baseUrl = process.env.APP_BASE_URL ?? process.env.SITE_URL ?? derivedBase;
     const normalizedBaseUrl = baseUrl.replace(/\/$/, "");
     const publicToken = report.public_share_token;
     if (!publicToken) {

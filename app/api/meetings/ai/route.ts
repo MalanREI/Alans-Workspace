@@ -77,16 +77,14 @@ export async function POST(req: Request) {
     const body = (await req.json()) as {
       meetingId?: string;
       sessionId?: string;
-      recordingPath?: string;
     };
 
     meetingId = body.meetingId;
     sessionId = body.sessionId;
-    const recordingPath = body.recordingPath;
 
-    if (!meetingId || !sessionId || !recordingPath) {
+    if (!meetingId || !sessionId) {
       return NextResponse.json(
-        { error: "meetingId + sessionId + recordingPath required" },
+        { error: "meetingId + sessionId required" },
         { status: 400 }
       );
     }
@@ -129,25 +127,71 @@ export async function POST(req: Request) {
       return NextResponse.json({ ok: true, skipped: "No agenda items" });
     }
 
-    // 2) Download recording from storage
-    const dl = await admin.storage.from(recordingsBucket).download(recordingPath);
-    if (dl.error) throw dl.error;
+    // 2) Load all recording segments for this session
+    const recRes = await admin
+      .from("meeting_recordings")
+      .select("storage_path,created_at")
+      .eq("session_id", sessionId)
+      .order("created_at", { ascending: true })
+      .limit(200);
 
-    const arrBuf = await dl.data.arrayBuffer();
+    if (recRes.error) throw recRes.error;
 
-    // 3) Transcribe with retry logic
+    const recordings = (recRes.data ?? []) as Array<{ storage_path: string; created_at: string }>;
+
+    if (!recordings.length) {
+      await admin
+        .from("meeting_minutes_sessions")
+        .update({
+          ai_status: "skipped",
+          ai_error: "No recording segments found for this session",
+          ai_processed_at: new Date().toISOString(),
+        })
+        .eq("id", sessionId);
+      return NextResponse.json({ ok: true, skipped: "No recording segments found" });
+    }
+
+    console.log(
+      `[ai] session=${sessionId} meeting=${meetingId} segmentsFound=${recordings.length}`
+    );
+
+    // 3) Transcribe all segments in order and combine
     const client = new OpenAI({ apiKey: openaiKey });
 
-    const transcription = await retryWithBackoff(async () => {
-      return await client.audio.transcriptions.create({
-        model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
-        file: bufToFile(arrBuf, "recording.webm", "audio/webm"),
-      });
-    }, 3, 2000); // 3 retries, starting with 2 second delay
+    const transcriptParts: string[] = [];
+    let transcribedCount = 0;
 
-    const transcriptText = transcription?.text
-      ? String(transcription.text)
-      : "";
+    for (let i = 0; i < recordings.length; i++) {
+      const recordingPath = String(recordings[i]?.storage_path ?? "").trim();
+      if (!recordingPath) continue;
+
+      const dl = await admin.storage.from(recordingsBucket).download(recordingPath);
+      if (dl.error) throw dl.error;
+
+      const arrBuf = await dl.data.arrayBuffer();
+      const byteSize = arrBuf.byteLength;
+      console.log(
+        `[ai] transcribing segment ${i + 1}/${recordings.length} path=${recordingPath} size=${byteSize} bytes`
+      );
+
+      const transcription = await retryWithBackoff(async () => {
+        return await client.audio.transcriptions.create({
+          model: process.env.OPENAI_TRANSCRIBE_MODEL || "gpt-4o-mini-transcribe",
+          file: bufToFile(arrBuf, `recording-segment-${i + 1}.webm`, "audio/webm"),
+        });
+      }, 3, 2000); // 3 retries, starting with 2 second delay
+
+      const segText = transcription?.text ? String(transcription.text).trim() : "";
+      if (segText) {
+        transcriptParts.push(segText);
+        transcribedCount += 1;
+      }
+    }
+
+    const transcriptText = transcriptParts.join("\n\n");
+    console.log(
+      `[ai] session=${sessionId} transcribedSegments=${transcribedCount}/${recordings.length} totalTranscriptChars=${transcriptText.length}`
+    );
 
     if (!transcriptText.trim()) {
       await admin
@@ -437,10 +481,13 @@ export async function POST(req: Request) {
       // Don't fail the whole process — PDF can be generated manually later
     }
 
-    return NextResponse.json({ 
-      ok: true, 
+    return NextResponse.json({
+      ok: true,
       agendaItemsUpdated: upRows.length,
       tasksCreated,
+      segmentsFound: recordings.length,
+      segmentsTranscribed: transcribedCount,
+      transcriptChars: transcriptText.length,
     });
   } catch (e: unknown) {
     // Mark as error with detailed context

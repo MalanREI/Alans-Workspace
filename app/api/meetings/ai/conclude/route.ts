@@ -28,16 +28,20 @@ export async function POST(req: Request) {
 
     const admin = supabaseAdmin();
 
-    // Check if recording exists for this session
-    const rec = await admin
+    // Check whether at least one recording segment exists for this session.
+    const recCountRes = await admin
       .from("meeting_recordings")
-      .select("storage_path")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", sessionId);
 
-    const hasRecording = !rec.error && !!rec.data?.storage_path;
+    if (recCountRes.error) throw recCountRes.error;
+
+    const recordingCount = recCountRes.count ?? 0;
+    const hasRecording = recordingCount > 0;
+
+    console.log(
+      `[conclude] meeting=${meetingId} session=${sessionId} recordingCount=${recordingCount} hasRecording=${hasRecording}`
+    );
 
     // Mark the session as ended and set status based on recording availability
     const upd = await admin
@@ -76,7 +80,7 @@ export async function POST(req: Request) {
           "Content-Type": "application/json",
           ...(internalToken ? { "x-internal-token": internalToken } : {}),
         },
-        body: JSON.stringify({ meetingId, sessionId, recordingPath: rec.data!.storage_path }),
+        body: JSON.stringify({ meetingId, sessionId }),
       }).catch(async (err: unknown) => {
         console.error("Failed to auto-trigger AI processing:", err);
         await admin

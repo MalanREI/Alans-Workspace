@@ -8,6 +8,12 @@ type StreamWithCleanup = MediaStream & {
   _audioContext?: AudioContext;
 };
 
+type FailedSegment = {
+  blob: Blob;
+  durationSeconds: number;
+  label: string;
+};
+
 type RecordingState = {
   isRecording: boolean;
   recSeconds: number;
@@ -95,7 +101,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
   const streamRef = useRef<MediaStream | null>(null);
   const segmentTimerRef = useRef<number | null>(null);
   const lastUploadedPathRef = useRef<string | null>(null);
-  const isRotatingRef = useRef(false);
+  const rotationPromiseRef = useRef<Promise<void> | null>(null);
+  const failedSegmentsRef = useRef<FailedSegment[]>([]);
+  const segmentCounterRef = useRef(0);
   /** Minimum allowed segment length to avoid excessively small uploads. */
   const MIN_SEGMENT_SECONDS = 60;
 
@@ -141,6 +149,30 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("beforeunload", handler);
   }, [isRecording]);
 
+  const uploadSegmentWithRetry = useCallback(
+    async (
+      blob: Blob,
+      meetingId: string,
+      sessionId: string,
+      durationSeconds: number,
+      label: string
+    ): Promise<string | null> => {
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        console.log(
+          `[recording] uploading ${label} attempt ${attempt}/2 size=${blob.size} bytes duration=${durationSeconds}s`
+        );
+        const path = await uploadSegment(blob, meetingId, sessionId, durationSeconds);
+        if (path) {
+          console.log(`[recording] upload success ${label} -> ${path}`);
+          return path;
+        }
+      }
+      console.error(`[recording] upload failed after retry for ${label}`);
+      return null;
+    },
+    []
+  );
+
   /**
    * Rotate segment: stop current MediaRecorder, start a new one on the same
    * audio stream, and upload the harvested chunks in the background.
@@ -148,82 +180,105 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
    * uninterrupted recording throughout.
    */
   const rotateSegment = useCallback(async () => {
-    if (isRotatingRef.current) return;
+    if (rotationPromiseRef.current) {
+      await rotationPromiseRef.current;
+      return;
+    }
+
     const mr = mediaRecorderRef.current;
     const stream = streamRef.current;
     if (!mr || mr.state === "inactive" || !stream || !stream.active) return;
 
-    isRotatingRef.current = true;
+    const work = (async () => {
+      try {
+        // 1. Redirect old recorder's final flush to a temp array
+        const finalFlushChunks: BlobPart[] = [];
+        mr.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) finalFlushChunks.push(e.data);
+        };
+
+        // 2. Harvest chunks accumulated so far
+        const segmentChunks = chunksRef.current;
+        chunksRef.current = [];
+
+        // 3. Stop old recorder
+        const stopped = new Promise<void>((resolve) => {
+          mr.onstop = () => resolve();
+        });
+        mr.stop();
+
+        // 4. Start new recorder immediately on same stream (minimises gap)
+        const newMr = new MediaRecorder(stream);
+        newMr.ondataavailable = (e) => {
+          if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+        };
+        newMr.start(1000);
+        mediaRecorderRef.current = newMr;
+
+        // 5. Wait for old recorder's final flush to complete
+        await stopped;
+
+        // 6. Combine old chunks + final flush and upload in background
+        const allOldChunks = [...segmentChunks, ...finalFlushChunks];
+        if (allOldChunks.length === 0) return;
+
+        const blob = new Blob(allOldChunks, { type: "audio/webm" });
+        const meetingId = activeMeetingIdRef.current;
+        const sessionId = activeSessionIdRef.current;
+        const segSec = Math.max(
+          MIN_SEGMENT_SECONDS,
+          Number(process.env.NEXT_PUBLIC_RECORDING_SEGMENT_SECONDS || "180")
+        );
+        const label = `segment-${++segmentCounterRef.current}`;
+
+        console.log(
+          `[recording] rotating ${label} with blob size=${blob.size} bytes (durationSeconds=${segSec})`
+        );
+
+        if (meetingId && sessionId) {
+          const path = await uploadSegmentWithRetry(blob, meetingId, sessionId, segSec, label);
+          if (path) {
+            lastUploadedPathRef.current = path;
+          } else {
+            failedSegmentsRef.current.push({ blob, durationSeconds: segSec, label });
+            const message =
+              `${label} upload failed. It will be retried automatically and again when meeting ends.`;
+            setRecErr(message);
+            if (typeof window !== "undefined") {
+              window.alert(message);
+            }
+          }
+        }
+      } catch (e) {
+        console.error("Segment rotation error:", e);
+        // Attempt recovery: ensure a recorder is still running
+        if (
+          (!mediaRecorderRef.current || mediaRecorderRef.current.state === "inactive") &&
+          streamRef.current?.active
+        ) {
+          try {
+            const recovery = new MediaRecorder(streamRef.current);
+            recovery.ondataavailable = (ev) => {
+              if (ev.data && ev.data.size > 0) chunksRef.current.push(ev.data);
+            };
+            recovery.start(1000);
+            mediaRecorderRef.current = recovery;
+          } catch (e2) {
+            console.error("Failed to recover recorder after rotation error:", e2);
+          }
+        }
+      }
+    })();
+
+    rotationPromiseRef.current = work;
     try {
-      // 1. Redirect old recorder's final flush to a temp array
-      const finalFlushChunks: BlobPart[] = [];
-      mr.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) finalFlushChunks.push(e.data);
-      };
-
-      // 2. Harvest chunks accumulated so far
-      const segmentChunks = chunksRef.current;
-      chunksRef.current = [];
-
-      // 3. Stop old recorder
-      const stopped = new Promise<void>((resolve) => {
-        mr.onstop = () => resolve();
-      });
-      mr.stop();
-
-      // 4. Start new recorder immediately on same stream (minimises gap)
-      const newMr = new MediaRecorder(stream);
-      newMr.ondataavailable = (e) => {
-        if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-      };
-      newMr.start(1000);
-      mediaRecorderRef.current = newMr;
-
-      // 5. Wait for old recorder's final flush to complete
-      await stopped;
-
-      // 6. Combine old chunks + final flush and upload in background
-      const allOldChunks = [...segmentChunks, ...finalFlushChunks];
-      if (allOldChunks.length === 0) return;
-
-      const blob = new Blob(allOldChunks, { type: "audio/webm" });
-      const meetingId = activeMeetingIdRef.current;
-      const sessionId = activeSessionIdRef.current;
-      const segSec = Math.max(
-        MIN_SEGMENT_SECONDS,
-        Number(process.env.NEXT_PUBLIC_RECORDING_SEGMENT_SECONDS || "240")
-      );
-
-      if (meetingId && sessionId) {
-        const path = await uploadSegment(blob, meetingId, sessionId, segSec);
-        if (path) {
-          lastUploadedPathRef.current = path;
-        } else {
-          console.warn("Segment upload failed; recording continues.");
-        }
-      }
-    } catch (e) {
-      console.error("Segment rotation error:", e);
-      // Attempt recovery: ensure a recorder is still running
-      if (
-        (!mediaRecorderRef.current || mediaRecorderRef.current.state === "inactive") &&
-        streamRef.current?.active
-      ) {
-        try {
-          const recovery = new MediaRecorder(streamRef.current);
-          recovery.ondataavailable = (e) => {
-            if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
-          };
-          recovery.start(1000);
-          mediaRecorderRef.current = recovery;
-        } catch (e2) {
-          console.error("Failed to recover recorder after rotation error:", e2);
-        }
-      }
+      await work;
     } finally {
-      isRotatingRef.current = false;
+      if (rotationPromiseRef.current === work) {
+        rotationPromiseRef.current = null;
+      }
     }
-  }, []);
+  }, [uploadSegmentWithRetry]);
 
   const stopRecordingAndUpload = useCallback(async (): Promise<{ recordingPath: string } | null> => {
     if (!mediaRecorderRef.current) return null;
@@ -231,12 +286,21 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setRecErr(null);
 
     try {
-      const mr = mediaRecorderRef.current;
-
       // Stop segment rotation timer
       if (segmentTimerRef.current) {
         window.clearInterval(segmentTimerRef.current);
         segmentTimerRef.current = null;
+      }
+
+      // Avoid a race between segment rotation and final stop/upload.
+      if (rotationPromiseRef.current) {
+        console.log("[recording] waiting for active segment rotation to complete before stop");
+        await rotationPromiseRef.current;
+      }
+
+      const mr = mediaRecorderRef.current;
+      if (!mr) {
+        throw new Error("Recorder became unavailable while stopping.");
       }
 
       // Wait for the "stop" event so the last chunk flushes before building the blob.
@@ -288,28 +352,76 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
         throw new Error("No active meeting/session for upload.");
       }
 
+      // Retry any failed rotated segments that were buffered in-memory.
+      if (failedSegmentsRef.current.length > 0) {
+        console.log(
+          `[recording] retrying ${failedSegmentsRef.current.length} failed segment(s) before final upload`
+        );
+      }
+
+      const remainingFailed: FailedSegment[] = [];
+      for (const failed of failedSegmentsRef.current) {
+        const recovered = await uploadSegmentWithRetry(
+          failed.blob,
+          currentMeetingId,
+          currentSessionId,
+          failed.durationSeconds,
+          `${failed.label}-recovery`
+        );
+        if (recovered) {
+          lastUploadedPathRef.current = recovered;
+        } else {
+          remainingFailed.push(failed);
+        }
+      }
+      failedSegmentsRef.current = remainingFailed;
+
       // If all data was already uploaded via segment rotation and nothing remains,
       // return the last successful path. A zero-size blob with no prior upload
       // indicates an error (e.g., no audio was ever captured).
       if (blob.size === 0) {
+        if (failedSegmentsRef.current.length > 0) {
+          throw new Error(
+            `Recording has ${failedSegmentsRef.current.length} failed segment upload(s). Please retry ending the meeting.`
+          );
+        }
         if (lastUploadedPathRef.current) {
           return { recordingPath: lastUploadedPathRef.current };
         }
         throw new Error("Recording produced no audio data");
       }
 
-      const path = await uploadSegment(blob, currentMeetingId, currentSessionId, currentSeconds);
+      console.log(
+        `[recording] uploading final segment size=${blob.size} bytes duration=${currentSeconds}s`
+      );
+
+      const path = await uploadSegmentWithRetry(
+        blob,
+        currentMeetingId,
+        currentSessionId,
+        currentSeconds,
+        "final-segment"
+      );
       if (!path) throw new Error("Recording upload failed");
+
+      if (failedSegmentsRef.current.length > 0) {
+        throw new Error(
+          `Final segment uploaded, but ${failedSegmentsRef.current.length} earlier segment(s) still failed to upload.`
+        );
+      }
 
       return { recordingPath: path };
     } catch (e: unknown) {
       const error = e as Error;
       setRecErr(error?.message ?? "Upload failed");
+      if (typeof window !== "undefined") {
+        window.alert(error?.message ?? "Upload failed");
+      }
       return null;
     } finally {
       setRecBusy(false);
     }
-  }, []);
+  }, [uploadSegmentWithRetry]);
 
   const startRecording = useCallback(
     async ({ meetingId, sessionId, meetingTitle, audioDeviceId, includeSystemAudio }: {
@@ -361,6 +473,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
         chunksRef.current = [];
         lastUploadedPathRef.current = null;
+        failedSegmentsRef.current = [];
+        segmentCounterRef.current = 0;
+        rotationPromiseRef.current = null;
         mr.ondataavailable = (e) => {
           if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
         };
@@ -381,7 +496,7 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
 
         const segmentSeconds = Math.max(
           MIN_SEGMENT_SECONDS,
-          Number(process.env.NEXT_PUBLIC_RECORDING_SEGMENT_SECONDS || "240")
+          Number(process.env.NEXT_PUBLIC_RECORDING_SEGMENT_SECONDS || "180")
         );
 
         // Elapsed-time tick (also enforces 2-hour safety cap)
@@ -427,6 +542,9 @@ export function RecordingProvider({ children }: { children: React.ReactNode }) {
     setRecSeconds(0);
     recSecondsRef.current = 0;
     lastUploadedPathRef.current = null;
+    failedSegmentsRef.current = [];
+    rotationPromiseRef.current = null;
+    segmentCounterRef.current = 0;
   }, [isRecording, stopRecordingAndUpload]);
 
   const clearError = useCallback(() => setRecErr(null), []);

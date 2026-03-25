@@ -3,10 +3,10 @@ import { supabaseAdmin } from "@/src/lib/supabase/admin";
 
 /**
  * Max upload size (bytes)
- * Default: 4MB
+ * Default: 25MB
  * Can be overridden with env var
  */
-const MAX_UPLOAD_BYTES = Number(process.env.MAX_RECORDING_UPLOAD_BYTES || 4_000_000);
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_RECORDING_UPLOAD_BYTES || 25_000_000);
 
 export async function POST(req: NextRequest) {
   try {
@@ -15,7 +15,10 @@ export async function POST(req: NextRequest) {
     const meetingId = (formData.get("meetingId") as string | null) ?? null;
     const sessionId = (formData.get("sessionId") as string | null) ?? null;
     const durationSeconds = (formData.get("durationSeconds") as string | null) ?? null;
-    const createdBy = (formData.get("createdBy") as string | null) ?? null;
+    const createdBy =
+      (formData.get("userId") as string | null) ??
+      (formData.get("createdBy") as string | null) ??
+      null;
     const file = (formData.get("file") as File | null) ?? null;
 
     if (!meetingId || !sessionId || !file) {

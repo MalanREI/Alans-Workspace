@@ -18,6 +18,7 @@ import { prettyDate } from "@/src/lib/format";
 import { PageShell } from "@/src/components/PageShell";
 import ResizableSidebar from "@/src/components/ResizableSidebar";
 import { useRecording } from "@/src/context/RecordingContext";
+import AttachmentSection, { type AttachmentParentType } from "@/src/components/AttachmentSection";
 
 export const dynamic = 'force-dynamic';
 
@@ -269,6 +270,7 @@ export default function MeetingDetailPage() {
   const [agendaNotes, setAgendaNotes] = useState<Record<string, string>>({});
   const [prevAgendaNotes, setPrevAgendaNotes] = useState<Record<string, string>>({});
   const [latestEventByTask, setLatestEventByTask] = useState<LatestEventMap>({});
+  const [attachmentCounts, setAttachmentCounts] = useState<Record<string, number>>({});
 
   // Kanban filters
   const [tasksCollapsed, setTasksCollapsed] = useState(false);
@@ -877,6 +879,46 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
     if (!again.error) setPriorities((again.data ?? []) as PriorityOpt[]);
   }
 
+  function attachmentKey(parentType: AttachmentParentType, parentId: string): string {
+    return `${parentType}:${parentId}`;
+  }
+
+  function getAttachmentCount(parentType: AttachmentParentType, parentId: string): number {
+    return attachmentCounts[attachmentKey(parentType, parentId)] ?? 0;
+  }
+
+  function onAttachmentCountChange(parentType: AttachmentParentType, parentId: string, count: number) {
+    setAttachmentCounts((prev) => ({
+      ...prev,
+      [attachmentKey(parentType, parentId)]: count,
+    }));
+  }
+
+  async function loadAttachmentCounts() {
+    type AttachmentCountRow = {
+      parent_type: AttachmentParentType;
+      parent_id: string;
+    };
+
+    const rows = await sb
+      .from("meeting_attachments")
+      .select("parent_type,parent_id")
+      .eq("meeting_id", meetingId);
+
+    // If migration not yet applied, do not block page load.
+    if (rows.error) {
+      setAttachmentCounts({});
+      return;
+    }
+
+    const next: Record<string, number> = {};
+    for (const row of (rows.data ?? []) as AttachmentCountRow[]) {
+      const key = attachmentKey(row.parent_type, row.parent_id);
+      next[key] = (next[key] ?? 0) + 1;
+    }
+    setAttachmentCounts(next);
+  }
+
   async function loadAll() {
     const m = await sb
       .from("meetings")
@@ -935,6 +977,8 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
       .eq("meeting_id", meetingId)
       .order("position", { ascending: true });
     if (!notes.error) setOngoingNotes((notes.data ?? []) as OngoingNote[]);
+
+    await loadAttachmentCounts();
 
     const a = await sb
       .from("meeting_agenda_items")
@@ -2486,6 +2530,9 @@ async function selectPreviousSession(sessionId: string) {
                                       >
                                         {t.priority}
                                       </span>
+                                      {getAttachmentCount("task", t.id) > 0 && (
+                                        <span className="text-xs text-slate-300">📎 {getAttachmentCount("task", t.id)}</span>
+                                      )}
                                       {t.due_date && <Pill>Due {t.due_date}</Pill>}
                                     </div>
 
@@ -2622,6 +2669,9 @@ async function selectPreviousSession(sessionId: string) {
                               {m.priority}
                             </span>
                             <Pill>{m.status}</Pill>
+                            {getAttachmentCount("milestone", m.id) > 0 && (
+                              <span className="text-xs text-slate-300">📎 {getAttachmentCount("milestone", m.id)}</span>
+                            )}
                             {m.target_date && <Pill>Target: {m.target_date}</Pill>}
                           </div>
                         </div>
@@ -2698,7 +2748,12 @@ async function selectPreviousSession(sessionId: string) {
                         >
                           <div className="flex items-center justify-between">
                             <div className="text-sm font-semibold">{n.title}</div>
-                            {n.category && <Pill>{n.category}</Pill>}
+                            <div className="flex items-center gap-2">
+                              {getAttachmentCount("note", n.id) > 0 && (
+                                <span className="text-xs text-slate-300">📎 {getAttachmentCount("note", n.id)}</span>
+                              )}
+                              {n.category && <Pill>{n.category}</Pill>}
+                            </div>
                           </div>
                           {n.content && (
                             <div className="text-xs text-slate-400 mt-2 whitespace-pre-wrap line-clamp-3">
@@ -2891,6 +2946,17 @@ async function selectPreviousSession(sessionId: string) {
                   <label className="text-xs text-slate-400">Notes</label>
                   <Textarea rows={5} value={tNotes} onChange={(e) => setTNotes(e.target.value)} />
                 </div>
+
+                {editingTaskId && (
+                  <div className="md:col-span-2">
+                    <AttachmentSection
+                      meetingId={meetingId}
+                      parentType="task"
+                      parentId={editingTaskId}
+                      onCountChange={(count) => onAttachmentCountChange("task", editingTaskId, count)}
+                    />
+                  </div>
+                )}
 
                 {editingTaskId && (
                   <div className="md:col-span-2">
@@ -3452,6 +3518,15 @@ async function selectPreviousSession(sessionId: string) {
                   <Input type="date" value={mTargetDate} onChange={(e) => setMTargetDate(e.target.value)} />
                 </div>
               </div>
+
+              {editingMilestoneId && (
+                <AttachmentSection
+                  meetingId={meetingId}
+                  parentType="milestone"
+                  parentId={editingMilestoneId}
+                  onCountChange={(count) => onAttachmentCountChange("milestone", editingMilestoneId, count)}
+                />
+              )}
             </div>
           </Modal>
 
@@ -3500,6 +3575,15 @@ async function selectPreviousSession(sessionId: string) {
                 <label className="text-xs text-slate-400">Content</label>
                 <Textarea rows={8} value={nContent} onChange={(e) => setNContent(e.target.value)} />
               </div>
+
+              {editingNoteId && (
+                <AttachmentSection
+                  meetingId={meetingId}
+                  parentType="note"
+                  parentId={editingNoteId}
+                  onCountChange={(count) => onAttachmentCountChange("note", editingNoteId, count)}
+                />
+              )}
             </div>
           </Modal>
 

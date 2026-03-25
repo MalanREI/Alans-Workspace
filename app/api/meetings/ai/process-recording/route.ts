@@ -22,20 +22,22 @@ export async function POST(req: Request) {
 
     const admin = supabaseAdmin();
 
-    // Verify recording exists for this session
-    const rec = await admin
+    // Verify at least one recording segment exists for this session.
+    const recCountRes = await admin
       .from("meeting_recordings")
-      .select("storage_path")
-      .eq("session_id", sessionId)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
+      .select("id", { count: "exact", head: true })
+      .eq("session_id", sessionId);
 
-    if (rec.error || !rec.data?.storage_path) {
+    if (recCountRes.error) throw recCountRes.error;
+
+    const recordingCount = recCountRes.count ?? 0;
+    if (recordingCount === 0) {
       return NextResponse.json({ error: "No recording found for this session" }, { status: 404 });
     }
 
-    const recordingPath = rec.data.storage_path;
+    console.log(
+      `[process-recording] meeting=${meetingId} session=${sessionId} recordingCount=${recordingCount}`
+    );
 
     // Update session to queued status
     const upd = await admin
@@ -57,7 +59,7 @@ export async function POST(req: Request) {
     fetch(`${baseUrl}/api/meetings/ai`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ meetingId, sessionId, recordingPath }),
+      body: JSON.stringify({ meetingId, sessionId }),
     }).catch(async (err: unknown) => {
       console.error("Failed to trigger AI processing:", err);
       // Update session status to error if fetch fails

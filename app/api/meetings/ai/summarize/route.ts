@@ -249,7 +249,7 @@ export async function POST(req: Request) {
             },
             {
               role: "user",
-              content: `Transcript:\n${transcriptText}`,
+              content: `Return the action items as JSON.\n\nTranscript:\n${transcriptText}`,
             },
           ],
         });

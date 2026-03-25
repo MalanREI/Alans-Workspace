@@ -28,5 +28,7 @@ export async function middleware(req: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/((?!api|_next/static|_next/image|favicon.ico).*)"],
+  // Temporary safety switch: disable middleware matching until edge runtime
+  // compatibility issue is resolved in the deployment environment.
+  matcher: ["/__middleware-disabled"],
 };

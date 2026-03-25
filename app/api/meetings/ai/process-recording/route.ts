@@ -56,7 +56,7 @@ export async function POST(req: Request) {
       ? `https://${process.env.VERCEL_URL}`
       : process.env.SITE_URL || "http://localhost:3000";
     
-    fetch(`${baseUrl}/api/meetings/ai`, {
+    fetch(`${baseUrl}/api/meetings/ai/transcribe`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ meetingId, sessionId }),

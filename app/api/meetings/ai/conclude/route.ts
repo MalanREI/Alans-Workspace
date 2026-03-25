@@ -72,9 +72,9 @@ export async function POST(req: Request) {
         .update({ ai_status: "queued", ai_error: null })
         .eq("id", sessionId);
 
-      // Fire-and-forget: trigger AI processing
+      // Fire-and-forget: trigger transcription (step 1 of 3: transcribe → summarize → finalize)
       const internalToken = process.env.INTERNAL_JOB_TOKEN || "";
-      fetch(`${baseUrl}/api/meetings/ai`, {
+      fetch(`${baseUrl}/api/meetings/ai/transcribe`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

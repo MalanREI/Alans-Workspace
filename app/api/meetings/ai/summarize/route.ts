@@ -153,17 +153,11 @@ export async function POST(req: Request) {
       )
       .join("\n");
 
-    const notesSchema = {
-      name: "AgendaNotes",
-      schema: { type: "object", additionalProperties: { type: "string" } },
-      strict: true,
-    } as const;
-
     const notesCompletion = await retryWithBackoff(async () => {
       return await client.chat.completions.create({
         model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
         temperature: 0.2,
-        response_format: { type: "json_schema", json_schema: notesSchema },
+        response_format: { type: "json_object" },
         messages: [
           {
             role: "system",
@@ -227,37 +221,11 @@ export async function POST(req: Request) {
 
     // Extract action items (non-fatal if this fails)
     try {
-      const actionItemSchema = {
-        name: "ActionItems",
-        schema: {
-          type: "object",
-          properties: {
-            items: {
-              type: "array",
-              items: {
-                type: "object",
-                properties: {
-                  title: { type: "string" },
-                  owner: { type: "string" },
-                  dueDate: { type: "string" },
-                  priority: { type: "string" },
-                },
-                required: ["title", "owner"],
-                additionalProperties: false,
-              },
-            },
-          },
-          required: ["items"],
-          additionalProperties: false,
-        },
-        strict: true,
-      } as const;
-
       const actionCompletion = await retryWithBackoff(async () => {
         return await client.chat.completions.create({
           model: process.env.OPENAI_SUMMARY_MODEL || "gpt-4o-mini",
           temperature: 0.2,
-          response_format: { type: "json_schema", json_schema: actionItemSchema },
+          response_format: { type: "json_object" },
           messages: [
             {
               role: "system",

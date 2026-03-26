@@ -994,7 +994,7 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
 
     const s = await sb
       .from("meeting_minutes_sessions")
-      .select("id,started_at,ended_at,session_number")
+      .select("id,started_at,ended_at,session_number,ai_status,ai_error")
       .eq("meeting_id", meetingId)
       .order("started_at", { ascending: false })
       .limit(2);
@@ -1005,6 +1005,15 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
 
     if (sessions[0]?.id) await loadAgendaNotes(sessions[0].id, true);
     if (sessions[1]?.id) await loadAgendaNotes(sessions[1].id, false);
+
+    // Clear stale AI error banners: only keep the error if the most recent
+    // session is currently in "error" state. If it's "done" (or any other
+    // non-error state), wipe any leftover setErr from a previous run.
+    if (sessions[0] && sessions[0].ai_status !== "error") {
+      setErr(null);
+    } else if (sessions[0]?.ai_status === "error" && sessions[0].ai_error) {
+      setErr("AI processing encountered an error: " + sessions[0].ai_error);
+    }
 
     const prevSessionId = search?.get("prevSessionId");
     if (prevSessionId) {
@@ -1108,12 +1117,11 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
       .single();
     if (created.error) throw created.error;
 
-    // Calculate session number based on finalized sessions (those with pdf_path and ended_at)
+    // Calculate session number based on all ended sessions for this meeting
     const countRes = await sb
       .from("meeting_minutes_sessions")
       .select("id", { count: 'exact' })
       .eq("meeting_id", meetingId)
-      .not("pdf_path", "is", null)
       .not("ended_at", "is", null);
 
     const sessionNum = (countRes.count ?? 0) + 1;
@@ -1127,7 +1135,13 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
 
     setPrevSession(currentSession);
     setCurrentSession(sessionData);
-    setPrevAgendaNotes(agendaNotes);
+    // Load previous session notes fresh from DB so we get AI-generated notes
+    // regardless of whether the poll had already completed before this ran.
+    if (currentSession?.id) {
+      await loadAgendaNotes(currentSession.id, false);
+    } else {
+      setPrevAgendaNotes({});
+    }
     setAgendaNotes({});
 
     return sessionData;
@@ -3192,7 +3206,7 @@ async function selectPreviousSession(sessionId: string) {
                         <div className="font-semibold">{prettyDate(s.started_at)}</div>
                       </button>
                       <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                        <span className="text-xs text-slate-400">Session #</span>
+                        <span className="text-xs text-slate-400">Meeting #</span>
                         <input
                           type="number"
                           min={1}
@@ -3706,7 +3720,7 @@ async function selectPreviousSession(sessionId: string) {
           {/* Start Meeting Checklist Modal */}
           <Modal
             open={startMeetingOpen}
-            title={`${meeting?.title ?? "Meeting"} — Session #${nextSessionNumber}`}
+            title={`${meeting?.title ?? "Meeting"} — Meeting #${nextSessionNumber}`}
             onClose={() => setStartMeetingOpen(false)}
             footer={
               <>

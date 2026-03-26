@@ -273,7 +273,7 @@ async function buildPdf(opts: {
 
   // Session badge pill
   if (opts.sessionNumber) {
-    const sessionText = `SESSION #${opts.sessionNumber}`;
+    const sessionText = `MEETING #${opts.sessionNumber}`;
     const stw = bold.widthOfTextAtSize(sessionText, 8);
     const pillW = stw + 14;
     const pillX = (PAGE_W - pillW) / 2;
@@ -668,8 +668,8 @@ async function buildPdf(opts: {
     page.drawRectangle({ x: leftX, y: y - boxBodyH, width: colW, height: boxBodyH, color: SLATE_50, borderWidth: 1, borderColor: SLATE_200 });
     page.drawRectangle({ x: rightX, y: y - boxBodyH, width: colW, height: boxBodyH, color: SLATE_50, borderWidth: 1, borderColor: SLATE_200 });
 
-    drawText("THIS SESSION", leftX + 8, y - 12, 8, bold, SLATE_400);
-    drawText("PREVIOUS SESSION", rightX + 8, y - 12, 8, bold, SLATE_400);
+    drawText("THIS MEETING", leftX + 8, y - 12, 8, bold, SLATE_400);
+    drawText("PREVIOUS MEETING", rightX + 8, y - 12, 8, bold, SLATE_400);
 
     let ly = y - 28;
     for (const ln of leftLines) {

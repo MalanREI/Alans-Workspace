@@ -213,7 +213,7 @@ function PolishableTextarea({
     lastValueRef.current = value;
   }, [value]);
 
-  async function handleBlur() {
+  async function handlePolish() {
     const text = lastValueRef.current.trim();
     if (text.length < 15 || polishing) return;
     setPolishing(true);
@@ -241,37 +241,44 @@ function PolishableTextarea({
     setOriginal("");
   }
 
+  const canPolish = value.trim().length >= 15 && !polishing;
+
   return (
     <div className="relative">
       <textarea
         value={value}
         onChange={(e) => { onChange(e.target.value); setPolished(false); }}
-        onBlur={handleBlur}
         placeholder={placeholder}
         rows={3}
         className="w-full rounded-lg border border-white/10 bg-base px-4 py-3 text-base text-slate-200 placeholder:text-slate-500 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-none"
       />
-      {(polishing || polished) && (
-        <div className="flex items-center gap-2 mt-1">
-          {polishing && (
-            <span className="text-xs text-slate-400 flex items-center gap-1">
-              <span className="animate-spin inline-block">⟳</span> AI polishing…
-            </span>
-          )}
-          {polished && !polishing && (
-            <>
-              <span className="text-xs text-emerald-400">✓ AI polished</span>
-              <button
-                type="button"
-                onClick={handleUndo}
-                className="text-xs text-slate-500 hover:text-slate-300 underline"
-              >
-                Undo
-              </button>
-            </>
-          )}
-        </div>
-      )}
+      <div className="flex items-center gap-3 mt-1.5">
+        {polishing ? (
+          <span className="text-xs text-slate-400 flex items-center gap-1">
+            <span className="animate-spin inline-block">⟳</span> AI polishing…
+          </span>
+        ) : polished ? (
+          <>
+            <span className="text-xs text-emerald-400">✓ AI polished — edit as needed</span>
+            <button
+              type="button"
+              onClick={handleUndo}
+              className="text-xs text-slate-500 hover:text-slate-300 underline"
+            >
+              Undo
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={handlePolish}
+            disabled={!canPolish}
+            className="text-xs text-emerald-400 hover:text-emerald-300 underline disabled:opacity-30 disabled:cursor-not-allowed"
+          >
+            Polish with AI
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -340,7 +347,7 @@ function ItemCard({
       <div>
         <label className="block text-sm text-slate-400 mb-1.5">
           Comments
-          <span className="ml-1.5 text-slate-600 normal-case font-normal">(AI will auto-polish on focus out)</span>
+          <span className="ml-1.5 text-slate-600 normal-case font-normal">(click &ldquo;Polish with AI&rdquo; when ready)</span>
         </label>
         <PolishableTextarea
           value={item.comments}

@@ -86,6 +86,7 @@ const TABS = [
   { value: "appearance", label: "Appearance", icon: "🎨" },
   { value: "notifications", label: "Notifications", icon: "🔔" },
   { value: "ai", label: "AI Preferences", icon: "🤖" },
+  { value: "meeting-ai", label: "Meeting AI", icon: "📝" },
   { value: "integrations", label: "Integrations", icon: "🔗" },
   { value: "team", label: "Team Management", icon: "👥" },
   { value: "data", label: "Data & Privacy", icon: "🔒" },
@@ -384,6 +385,160 @@ function AISection() {
         </Field>
 
         <Button>Save AI Preferences</Button>
+      </div>
+    </Card>
+  );
+}
+
+function MeetingAISection() {
+  const sb = useMemo(() => supabaseBrowser(), []);
+  const [loaded, setLoaded] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const [aiContext, setAiContext] = useState("");
+  const [noteStyle, setNoteStyle] = useState("standard");
+  const [focusAreas, setFocusAreas] = useState("");
+  const [ignoreTopics, setIgnoreTopics] = useState("");
+  const [speakerNames, setSpeakerNames] = useState("");
+  const [summaryStyle, setSummaryStyle] = useState("bullets");
+  const [autoPublish, setAutoPublish] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      const res = await sb
+        .from("meeting_ai_settings")
+        .select("setting_key,setting_value")
+        .is("meeting_id", null);
+      if (!res.error && res.data) {
+        const map: Record<string, string> = {};
+        for (const row of res.data as { setting_key: string; setting_value: string }[]) {
+          map[row.setting_key] = row.setting_value;
+        }
+        if (map.ai_context) setAiContext(map.ai_context);
+        if (map.ai_note_style) setNoteStyle(map.ai_note_style);
+        if (map.ai_focus_areas) setFocusAreas(map.ai_focus_areas);
+        if (map.ai_ignore_topics) setIgnoreTopics(map.ai_ignore_topics);
+        if (map.ai_speaker_names) setSpeakerNames(map.ai_speaker_names);
+        if (map.ai_summary_style) setSummaryStyle(map.ai_summary_style);
+        if (map.ai_auto_publish) setAutoPublish(map.ai_auto_publish === "true");
+      }
+      setLoaded(true);
+    }
+    void load();
+  }, [sb]);
+
+  async function save() {
+    setSaving(true);
+    setSaved(false);
+    try {
+      // Delete all global settings then re-insert (handles NULL meeting_id uniqueness)
+      await sb.from("meeting_ai_settings").delete().is("meeting_id", null);
+      const rows: Array<{ setting_key: string; setting_value: string }> = [
+        { setting_key: "ai_context", setting_value: aiContext },
+        { setting_key: "ai_note_style", setting_value: noteStyle },
+        { setting_key: "ai_focus_areas", setting_value: focusAreas },
+        { setting_key: "ai_ignore_topics", setting_value: ignoreTopics },
+        { setting_key: "ai_speaker_names", setting_value: speakerNames },
+        { setting_key: "ai_summary_style", setting_value: summaryStyle },
+        { setting_key: "ai_auto_publish", setting_value: String(autoPublish) },
+      ].filter((r) => r.setting_value.trim() !== "");
+      if (rows.length > 0) await sb.from("meeting_ai_settings").insert(rows);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!loaded) return <Card title="Meeting AI Settings"><div className="text-sm text-slate-400">Loading...</div></Card>;
+
+  return (
+    <Card title="Meeting AI Settings">
+      <div className="space-y-5">
+        <p className="text-xs text-slate-500">
+          These global defaults apply to all meetings. Individual meetings can override them via Edit ▾ → AI Settings.
+        </p>
+
+        <SectionHeading>Meeting Context</SectionHeading>
+        <Field
+          label="Meeting Context"
+          hint="Describe who attends and what this meeting covers. The AI uses this to write more relevant, specific notes."
+        >
+          <textarea
+            value={aiContext}
+            onChange={(e) => setAiContext(e.target.value)}
+            rows={5}
+            placeholder="e.g. Monthly review between AT-PD (Alan Moore) and Nvidia (Beth Brooks, Ken Vargas). We discuss vending, cleaning, and procurement services for Oregon and California data centers. Focus on action items, approvals needed, and status changes."
+            className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-y"
+          />
+        </Field>
+
+        <Field
+          label="Speaker Identification"
+          hint="Help the AI identify who is speaking so it can attribute statements correctly."
+        >
+          <textarea
+            value={speakerNames}
+            onChange={(e) => setSpeakerNames(e.target.value)}
+            rows={3}
+            placeholder="e.g. Alan Moore (AT-PD, meeting host), Beth Brooks (Nvidia, approver), Ken Vargas (Nvidia, technical lead)"
+            className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-y"
+          />
+        </Field>
+
+        <SectionHeading>Note Style</SectionHeading>
+        <Field label="Detail Level" hint="How thorough the AI notes should be per agenda topic">
+          <Select
+            value={noteStyle}
+            onChange={setNoteStyle}
+            options={[
+              { value: "brief", label: "Brief — 3-4 bullets per topic" },
+              { value: "standard", label: "Standard — 5-8 bullets per topic" },
+              { value: "detailed", label: "Detailed — Comprehensive coverage" },
+            ]}
+          />
+        </Field>
+
+        <Field label="Executive Summary Format">
+          <Select
+            value={summaryStyle}
+            onChange={setSummaryStyle}
+            options={[
+              { value: "bullets", label: "Bullet points (default)" },
+              { value: "paragraph", label: "Narrative paragraph" },
+            ]}
+          />
+        </Field>
+
+        <SectionHeading>Focus & Filtering</SectionHeading>
+        <Field label="Focus Areas" hint="Comma-separated topics the AI should prioritize">
+          <Input
+            value={focusAreas}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFocusAreas(e.target.value)}
+            placeholder="e.g. action items, approvals, deadlines, vendor status updates"
+          />
+        </Field>
+
+        <Field label="Topics to Minimize" hint="Comma-separated topics to de-emphasize or skip">
+          <Input
+            value={ignoreTopics}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setIgnoreTopics(e.target.value)}
+            placeholder="e.g. small talk, scheduling logistics, introductions"
+          />
+        </Field>
+
+        <SectionHeading>Publishing</SectionHeading>
+        <RowToggle
+          label="Auto-publish notes"
+          description="When off, AI notes go to 'Draft' status so you can review and edit before publishing. When on, notes publish immediately after AI processing."
+          checked={autoPublish}
+          onChange={setAutoPublish}
+        />
+
+        <Button onClick={() => void save()} disabled={saving}>
+          {saving ? "Saving..." : saved ? "✓ Saved" : "Save Settings"}
+        </Button>
       </div>
     </Card>
   );
@@ -867,6 +1022,7 @@ export default function SettingsPage() {
       case "appearance": return <AppearanceSection />;
       case "notifications": return <NotificationsSection />;
       case "ai": return <AISection />;
+      case "meeting-ai": return <MeetingAISection />;
       case "integrations": return <IntegrationsSection />;
       case "team": return <TeamSection />;
       case "data": return <DataSection />;

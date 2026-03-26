@@ -352,6 +352,21 @@ export default function MeetingDetailPage() {
   const [err, setErr] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
+  // AI Settings modal (per-meeting overrides)
+  const [aiSettingsOpen, setAiSettingsOpen] = useState(false);
+  const [aiSettingsBusy, setAiSettingsBusy] = useState(false);
+  const [globalAiSettings, setGlobalAiSettings] = useState<Record<string, string>>({});
+  const [meetingAiContext, setMeetingAiContext] = useState("");
+  const [meetingAiNoteStyle, setMeetingAiNoteStyle] = useState("");
+  const [meetingAiFocusAreas, setMeetingAiFocusAreas] = useState("");
+  const [meetingAiIgnoreTopics, setMeetingAiIgnoreTopics] = useState("");
+  const [meetingAiSpeakerNames, setMeetingAiSpeakerNames] = useState("");
+  const [meetingAiSummaryStyle, setMeetingAiSummaryStyle] = useState("");
+  const [meetingAiAutoPublish, setMeetingAiAutoPublish] = useState<boolean | null>(null);
+
+  // Publish (review→done) state
+  const [publishBusy, setPublishBusy] = useState(false);
+
   // Milestone modal
   const [milestoneOpen, setMilestoneOpen] = useState(false);
   const [editingMilestoneId, setEditingMilestoneId] = useState<string | null>(null);
@@ -773,6 +788,68 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
     setNoteFilterCategories(new Set(availableNoteCategories));
   }
 
+
+  async function loadAiSettings() {
+    const [globalRes, meetingRes] = await Promise.all([
+      sb.from("meeting_ai_settings").select("setting_key,setting_value").is("meeting_id", null),
+      sb.from("meeting_ai_settings").select("setting_key,setting_value").eq("meeting_id", meetingId),
+    ]);
+    const global: Record<string, string> = {};
+    for (const r of (globalRes.data ?? []) as { setting_key: string; setting_value: string }[]) {
+      global[r.setting_key] = r.setting_value;
+    }
+    setGlobalAiSettings(global);
+    const meeting: Record<string, string> = {};
+    for (const r of (meetingRes.data ?? []) as { setting_key: string; setting_value: string }[]) {
+      meeting[r.setting_key] = r.setting_value;
+    }
+    setMeetingAiContext(meeting.ai_context ?? "");
+    setMeetingAiNoteStyle(meeting.ai_note_style ?? "");
+    setMeetingAiFocusAreas(meeting.ai_focus_areas ?? "");
+    setMeetingAiIgnoreTopics(meeting.ai_ignore_topics ?? "");
+    setMeetingAiSpeakerNames(meeting.ai_speaker_names ?? "");
+    setMeetingAiSummaryStyle(meeting.ai_summary_style ?? "");
+    setMeetingAiAutoPublish(meeting.ai_auto_publish != null ? meeting.ai_auto_publish === "true" : null);
+  }
+
+  async function saveAiSettings() {
+    setAiSettingsBusy(true);
+    try {
+      await sb.from("meeting_ai_settings").delete().eq("meeting_id", meetingId);
+      const rows: Array<{ setting_key: string; setting_value: string; meeting_id: string }> = [];
+      if (meetingAiContext.trim()) rows.push({ setting_key: "ai_context", setting_value: meetingAiContext.trim(), meeting_id: meetingId });
+      if (meetingAiNoteStyle.trim()) rows.push({ setting_key: "ai_note_style", setting_value: meetingAiNoteStyle.trim(), meeting_id: meetingId });
+      if (meetingAiFocusAreas.trim()) rows.push({ setting_key: "ai_focus_areas", setting_value: meetingAiFocusAreas.trim(), meeting_id: meetingId });
+      if (meetingAiIgnoreTopics.trim()) rows.push({ setting_key: "ai_ignore_topics", setting_value: meetingAiIgnoreTopics.trim(), meeting_id: meetingId });
+      if (meetingAiSpeakerNames.trim()) rows.push({ setting_key: "ai_speaker_names", setting_value: meetingAiSpeakerNames.trim(), meeting_id: meetingId });
+      if (meetingAiSummaryStyle.trim()) rows.push({ setting_key: "ai_summary_style", setting_value: meetingAiSummaryStyle.trim(), meeting_id: meetingId });
+      if (meetingAiAutoPublish !== null) rows.push({ setting_key: "ai_auto_publish", setting_value: String(meetingAiAutoPublish), meeting_id: meetingId });
+      if (rows.length > 0) await sb.from("meeting_ai_settings").insert(rows);
+      setAiSettingsOpen(false);
+    } finally {
+      setAiSettingsBusy(false);
+    }
+  }
+
+  async function publishNotes() {
+    if (!currentSession?.id) return;
+    setPublishBusy(true);
+    setErr(null);
+    try {
+      const res = await fetch("/api/meetings/ai/publish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: currentSession.id, meetingId, editedNotes: agendaNotes }),
+      });
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || "Failed to publish");
+      setInfo("⏳ Publishing notes and generating PDF...");
+      void pollForAiCompletion(currentSession.id);
+    } catch (e: unknown) {
+      setErr((e as Error)?.message ?? "Failed to publish notes");
+    } finally {
+      setPublishBusy(false);
+    }
+  }
 
   async function loadAgendaNotes(sessionId: string, isCurrent: boolean) {
     const n = await sb.from("meeting_agenda_notes").select("agenda_item_id,notes").eq("session_id", sessionId);
@@ -1857,6 +1934,12 @@ function formatTaskEventLine(opts: { event: TaskEvent; columns: Column[] }): str
         const status = String(st.data.ai_status ?? "");
         const aiError = String(st.data.ai_error ?? "");
 
+        if (status === "review") {
+          await loadAgendaNotes(pollSessionId, true);
+          setInfo("📝 AI notes are ready for review. Edit any notes below, then click 'Publish Notes' to generate the PDF.");
+          return;
+        }
+
         if (status === "done") {
           await loadAgendaNotes(pollSessionId, true);
           const s2 = await sb
@@ -2269,6 +2352,7 @@ async function selectPreviousSession(sessionId: string) {
 
   useEffect(() => {
     void loadReminderSettings();
+    void loadAiSettings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meetingId]);
 
@@ -2305,6 +2389,7 @@ async function selectPreviousSession(sessionId: string) {
                   { label: "Edit note categories", onClick: () => setNoteCategoriesOpen(true) },
                   { label: "Edit attendees", onClick: () => setAttendeesMgrOpen(true) },
                   { label: "Email settings", onClick: () => setEmailSettingsOpen(true) },
+                  { label: "AI Settings", onClick: () => { void loadAiSettings(); setAiSettingsOpen(true); } },
                 ]}
               />
               
@@ -2366,8 +2451,30 @@ async function selectPreviousSession(sessionId: string) {
             collapsedWidth={56}
             sidebar={
               <div className="space-y-6">
-                <Card title="Agenda + Minutes">
+                <Card
+                  title="Agenda + Minutes"
+                  right={
+                    currentSession?.ai_status === "review" ? (
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs px-2 py-0.5 rounded-full bg-yellow-500/20 text-yellow-400 border border-yellow-500/30 font-medium">
+                          Draft
+                        </span>
+                        <Button
+                          onClick={() => void publishNotes()}
+                          disabled={publishBusy}
+                        >
+                          {publishBusy ? "Publishing..." : "Publish Notes"}
+                        </Button>
+                      </div>
+                    ) : undefined
+                  }
+                >
 <div className="space-y-4">
+                    {currentSession?.ai_status === "review" && (
+                      <div className="text-xs text-amber-400 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2">
+                        AI notes are in draft. Review and edit below, then click <strong>Publish Notes</strong> to generate the PDF and finalize.
+                      </div>
+                    )}
                     {agenda.length === 0 ? (
                       <div className="text-sm text-slate-400">No agenda topics yet.</div>
                     ) : (
@@ -2378,7 +2485,13 @@ async function selectPreviousSession(sessionId: string) {
                               {a.code ? `${a.code} - ` : ""}
                               {a.title}
                             </div>
-                            {currentSession ? <Pill>Current</Pill> : <Pill>No session</Pill>}
+                            {currentSession?.ai_status === "review" ? (
+                              <span className="text-xs px-1.5 py-0.5 rounded bg-yellow-500/20 text-yellow-400">Draft</span>
+                            ) : currentSession ? (
+                              <Pill>Current</Pill>
+                            ) : (
+                              <Pill>No session</Pill>
+                            )}
                           </div>
                           {a.description && <div className="text-xs text-slate-400 mt-1">{a.description}</div>}
 
@@ -2390,7 +2503,7 @@ async function selectPreviousSession(sessionId: string) {
                                 value={agendaNotes[a.id] ?? ""}
                                 onChange={(e) => saveAgendaNote(a.id, e.target.value)}
                                 placeholder="Notes for this agenda topic..."
-                                disabled={!currentSession || !!currentSession.ended_at}
+                                disabled={!currentSession || (!!currentSession.ended_at && currentSession.ai_status !== "review")}
                               />
                             </div>
                             <div>
@@ -3005,7 +3118,14 @@ async function selectPreviousSession(sessionId: string) {
                     <div className="p-3 text-sm text-slate-400">No events yet.</div>
                   ) : (
                     <div className="divide-y">
-                      {tEvents.map((e) => (
+                      {tEvents.filter((e) => {
+                        // Hide updates where only the "notes" field changed
+                        if (e.event_type === "updated") {
+                          const keys = Object.keys(e.payload?.changes ?? {});
+                          if (keys.length > 0 && keys.every((k) => k === "notes")) return false;
+                        }
+                        return true;
+                      }).map((e) => (
                         <div key={e.id} className="p-3 text-sm">
                           <div className="flex items-center justify-between">
                             <div className="font-medium">
@@ -3052,6 +3172,153 @@ async function selectPreviousSession(sessionId: string) {
       </div>  {/* closes space-y-4 */}
     </div>    {/* closes max-h-[70vh] wrapper */}
   </Modal>
+
+          {/* AI Settings Modal (per-meeting overrides) */}
+          <Modal
+            open={aiSettingsOpen}
+            title="AI Note-taking Settings"
+            onClose={() => setAiSettingsOpen(false)}
+            footer={
+              <>
+                <Button variant="ghost" onClick={() => setAiSettingsOpen(false)}>Cancel</Button>
+                <Button onClick={() => void saveAiSettings()} disabled={aiSettingsBusy}>
+                  {aiSettingsBusy ? "Saving..." : "Save Settings"}
+                </Button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              <p className="text-xs text-slate-500">
+                Override global AI settings for this meeting only. Leave empty to use global defaults.
+              </p>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Meeting Context
+                  {!meetingAiContext && globalAiSettings.ai_context && (
+                    <span className="ml-2 text-slate-600 font-normal">Using global default</span>
+                  )}
+                </label>
+                <textarea
+                  value={meetingAiContext}
+                  onChange={(e) => setMeetingAiContext(e.target.value)}
+                  rows={4}
+                  placeholder={globalAiSettings.ai_context || "Describe who attends and what this meeting covers..."}
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-y"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Speaker Identification
+                  {!meetingAiSpeakerNames && globalAiSettings.ai_speaker_names && (
+                    <span className="ml-2 text-slate-600 font-normal">Using global default</span>
+                  )}
+                </label>
+                <textarea
+                  value={meetingAiSpeakerNames}
+                  onChange={(e) => setMeetingAiSpeakerNames(e.target.value)}
+                  rows={2}
+                  placeholder={globalAiSettings.ai_speaker_names || "e.g. Alan Moore (host), Beth Brooks (approver)..."}
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none focus:ring-2 focus:ring-emerald-500/40 resize-y"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">
+                    Detail Level
+                    {!meetingAiNoteStyle && globalAiSettings.ai_note_style && (
+                      <span className="ml-2 text-slate-600 font-normal">Using global</span>
+                    )}
+                  </label>
+                  <select
+                    value={meetingAiNoteStyle}
+                    onChange={(e) => setMeetingAiNoteStyle(e.target.value)}
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 outline-none"
+                  >
+                    <option value="">— Global default ({globalAiSettings.ai_note_style || "standard"})</option>
+                    <option value="brief">Brief (3-4 bullets)</option>
+                    <option value="standard">Standard (5-8 bullets)</option>
+                    <option value="detailed">Detailed (comprehensive)</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-slate-400 mb-1">
+                    Summary Format
+                    {!meetingAiSummaryStyle && globalAiSettings.ai_summary_style && (
+                      <span className="ml-2 text-slate-600 font-normal">Using global</span>
+                    )}
+                  </label>
+                  <select
+                    value={meetingAiSummaryStyle}
+                    onChange={(e) => setMeetingAiSummaryStyle(e.target.value)}
+                    className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 outline-none"
+                  >
+                    <option value="">— Global default</option>
+                    <option value="bullets">Bullet points</option>
+                    <option value="paragraph">Paragraph</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Focus Areas
+                  {!meetingAiFocusAreas && globalAiSettings.ai_focus_areas && (
+                    <span className="ml-2 text-slate-600 font-normal">Using global default</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={meetingAiFocusAreas}
+                  onChange={(e) => setMeetingAiFocusAreas(e.target.value)}
+                  placeholder={globalAiSettings.ai_focus_areas || "e.g. action items, approvals, deadlines"}
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-medium text-slate-400 mb-1">
+                  Topics to Minimize
+                  {!meetingAiIgnoreTopics && globalAiSettings.ai_ignore_topics && (
+                    <span className="ml-2 text-slate-600 font-normal">Using global default</span>
+                  )}
+                </label>
+                <input
+                  type="text"
+                  value={meetingAiIgnoreTopics}
+                  onChange={(e) => setMeetingAiIgnoreTopics(e.target.value)}
+                  placeholder={globalAiSettings.ai_ignore_topics || "e.g. small talk, scheduling logistics"}
+                  className="w-full rounded-lg border border-white/10 bg-base px-3 py-2 text-sm text-slate-200 placeholder-slate-600 outline-none"
+                />
+              </div>
+
+              <div className="flex items-center justify-between py-2 border-t border-white/[0.06]">
+                <div>
+                  <div className="text-sm text-slate-200">Auto-publish notes</div>
+                  <div className="text-xs text-slate-500 mt-0.5">
+                    {meetingAiAutoPublish === null
+                      ? `Global default: ${globalAiSettings.ai_auto_publish === "true" ? "On" : "Off"}`
+                      : meetingAiAutoPublish
+                      ? "On for this meeting"
+                      : "Off — notes require review before publishing"}
+                  </div>
+                </div>
+                <select
+                  value={meetingAiAutoPublish === null ? "" : String(meetingAiAutoPublish)}
+                  onChange={(e) =>
+                    setMeetingAiAutoPublish(e.target.value === "" ? null : e.target.value === "true")
+                  }
+                  className="rounded-lg border border-white/10 bg-base px-2 py-1 text-sm text-slate-200 outline-none"
+                >
+                  <option value="">— Global default</option>
+                  <option value="true">Auto-publish</option>
+                  <option value="false">Require review</option>
+                </select>
+              </div>
+            </div>
+          </Modal>
 
 {/* Agenda Editor */}
 <Modal
@@ -3830,7 +4097,7 @@ async function selectPreviousSession(sessionId: string) {
                       </div>
                     </div>
 
-                    {/* System audio toggle for virtual meetings */}
+                    {/* Tab audio capture for virtual meetings */}
                     {systemAudioSupported && (
                       <div className="mt-3 p-3 rounded-lg border border-white/10 bg-white/[0.02]">
                         <label className="flex items-center gap-3 cursor-pointer">
@@ -3842,12 +4109,12 @@ async function selectPreviousSession(sessionId: string) {
                           />
                           <div>
                             <div className="text-sm text-slate-200">
-                              Capture system audio (for virtual meetings)
+                              Mic + Browser tab audio (for online meetings)
                             </div>
                             <div className="text-xs text-slate-500 mt-0.5">
-                              Enable this if you&apos;re on Google Meet, Zoom, or Teams to capture
-                              other participants&apos; audio through your speakers. Chrome will ask
-                              you to select which tab or screen to share.
+                              For Google Meet, Teams, or Zoom running in Chrome. After clicking Start,
+                              Chrome will ask you to select the tab with your meeting — select it to
+                              capture both sides of the conversation. Requires Chrome.
                             </div>
                           </div>
                         </label>

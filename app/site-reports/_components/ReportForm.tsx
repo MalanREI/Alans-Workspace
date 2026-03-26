@@ -776,13 +776,26 @@ export function ReportForm({ initialData }: ReportFormProps) {
                           {ms.milestone_id ? (
                             <div>
                               <p className="font-medium text-slate-200 truncate">{ms.milestone_name}</p>
-                              {(ms.milestone_date || ms.scheduled_date) && (
-                                <p className="text-xs text-slate-500 mt-0.5 truncate">
-                                  {ms.milestone_date ? `Target: ${ms.milestone_date}` : ""}
-                                  {ms.milestone_date && ms.scheduled_date ? " - " : ""}
-                                  {ms.scheduled_date ? `Current: ${ms.scheduled_date}` : ""}
-                                </p>
-                              )}
+                              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                <div className="flex items-center gap-1">
+                                  <span className="text-xs text-slate-500 shrink-0">Target:</span>
+                                  <input
+                                    type="date"
+                                    value={ms.milestone_date}
+                                    onChange={(e) => updateMilestone(ms.localId, { milestone_date: e.target.value })}
+                                    className="rounded border border-white/10 bg-base px-1.5 py-0.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-emerald-500/40"
+                                  />
+                                </div>
+                                <div className="flex items-center gap-1">
+                                  <span className="text-xs text-slate-500 shrink-0">Scheduled:</span>
+                                  <input
+                                    type="date"
+                                    value={ms.scheduled_date}
+                                    onChange={(e) => updateMilestone(ms.localId, { scheduled_date: e.target.value })}
+                                    className="rounded border border-white/10 bg-base px-1.5 py-0.5 text-xs text-slate-300 outline-none focus:ring-1 focus:ring-emerald-500/40"
+                                  />
+                                </div>
+                              </div>
                             </div>
                           ) : (
                             <input

@@ -282,29 +282,36 @@ function drawFinalTrackerCta(ctx: Ctx, url: string) {
   const ctaW = ctx.bold.widthOfTextAtSize(cta, ctaSize);
   const ctaX = (PAGE_W - ctaW) / 2;
   const ctaY = blurbY - 20;
-  page.drawText(cta, { x: ctaX, y: ctaY, size: ctaSize, font: ctx.bold, color: COLOR.blue });
+  const ctaBlue = rgb(0.216, 0.541, 0.867);
+  page.drawText(cta, { x: ctaX, y: ctaY, size: ctaSize, font: ctx.bold, color: ctaBlue });
   page.drawLine({
     start: { x: ctaX, y: ctaY - 1 },
     end: { x: ctaX + ctaW, y: ctaY - 1 },
     thickness: 0.7,
-    color: COLOR.blue,
+    color: ctaBlue,
   });
 
   try {
-    const annotRef = ctx.doc.context.register(
-      ctx.doc.context.obj({
-        Type: PDFName.of("Annot"),
-        Subtype: PDFName.of("Link"),
-        Rect: [ctaX - 2, ctaY - 3, ctaX + ctaW + 2, ctaY + ctaSize + 2],
-        Border: [0, 0, 0],
-        C: [],
-        A: ctx.doc.context.obj({
-          S: PDFName.of("URI"),
-          URI: PDFString.of(url),
-        }),
-      })
+    const linkAnnotation = ctx.doc.context.obj({
+      Type: PDFName.of("Annot"),
+      Subtype: PDFName.of("Link"),
+      Rect: [ctaX - 2, ctaY - 3, ctaX + ctaW + 2, ctaY + ctaSize + 2],
+      Border: [0, 0, 0],
+      F: 4,
+      A: ctx.doc.context.obj({
+        Type: PDFName.of("Action"),
+        S: PDFName.of("URI"),
+        URI: PDFString.of(url),
+      }),
+    });
+    page.node.set(
+      PDFName.of("Annots"),
+      ctx.doc.context.obj([
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        ...((page.node.lookup(PDFName.of("Annots")) as any)?.asArray?.() ?? []),
+        ctx.doc.context.register(linkAnnotation),
+      ])
     );
-    page.node.addAnnot(annotRef);
   } catch {
     // Annotation support can vary by PDF reader.
   }
